@@ -1,0 +1,101 @@
+name: Release (pkg + ZXP)
+
+# A tag publishes both channels at once:
+#   AudioPro-Premiere-<v>.pkg — first install: extension + ffmpeg + the CEP
+#                               preference that lets an unsigned panel load.
+#   audio-pro-<v>.zxp         — what the panel's own ⟳ pill downloads later;
+#                               no binaries, because the .pkg already placed
+#                               them and the unzip must not disturb them.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Needs macOS for pkgbuild/productbuild and for the arm64 binaries.
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Fetch the pinned ffmpeg/ffprobe (arm64, SHA256-verified)
+        run: npm run setup:bin
+
+      - name: Version is consistent across manifest, package.json and the panel
+        run: npm run check:version
+
+      # Signing only happens once the Apple Developer secrets exist. Until
+      # then this is a no-op and the installer ships unsigned (right-click →
+      # Open the first time), exactly as audio_education does — see its
+      # docs/SIGNING.md for the decision and what turning it on requires.
+      - name: Check for signing credentials
+        id: signing
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          INSTALLER_ID: ${{ secrets.APPLE_INSTALLER_IDENTITY }}
+        run: |
+          if [ -n "$CERT" ] && [ -n "$INSTALLER_ID" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No Apple Developer secrets configured — building an unsigned installer."
+          fi
+
+      - name: Import the signing certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          CERT: ${{ secrets.MACOS_CERTIFICATE }}
+          CERT_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$CERT" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$CERT_PASSWORD" \
+            -T /usr/bin/productbuild -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k actions build.keychain
+          rm -f /tmp/cert.p12
+
+      - name: Build the ZXP and the installer
+        env:
+          PKG_SIGN_IDENTITY: ${{ steps.signing.outputs.enabled == 'true' && secrets.APPLE_INSTALLER_IDENTITY || '' }}
+        run: |
+          set -euo pipefail
+          npm run build:zxp
+          npm run build:pkg
+
+      - name: Notarize and staple the installer
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          pkg="$(find dist -maxdepth 1 -name '*.pkg' -print -quit)"
+          xcrun notarytool submit "$pkg" --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$pkg"
+          xcrun stapler validate "$pkg"
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.pkg
+            dist/*.zxp
+          generate_release_notes: true
+          fail_on_unmatched_files: true

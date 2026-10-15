@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Conectar con Adobe</title>
+  <style>
+    :root { --bg: #14161b; --panel: #1b1e25; --border: rgba(255,255,255,.12); --text: #e6edf3; --muted: #9aa4b2; --accent: #7c5cff; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; }
+    body { display: flex; flex-direction: column; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, "Segoe UI", sans-serif; }
+    header { padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); }
+    header .hint { color: var(--muted); font-size: 12px; margin-top: 2px; }
+    iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+    footer { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--border); background: var(--panel); }
+    footer .status { flex: 1; color: var(--muted); font-size: 12px; }
+    button { padding: 7px 14px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
+    button:hover { border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <b>Conectate con tu cuenta de Adobe</b>
+    <div class="hint">Logueate abajo como en el navegador. Cuando termines, la ventana se cierra sola.</div>
+  </header>
+  <iframe id="adobeFrame" src="https://podcast.adobe.com/en/enhance"></iframe>
+  <footer>
+    <span class="status" id="status">Esperando el login…</span>
+    <button id="cancelBtn">Cancelar</button>
+  </footer>
+  <script src="lib/CSInterface.js"></script>
+  <script src="js/login.js"></script>
+</body>
+</html>

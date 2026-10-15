@@ -1,0 +1,90 @@
+#!/bin/sh
+# Runs as root after the payload lands. The payload itself only writes to
+# /Library/Application Support/AudioPro — a shared location root can own —
+# and this script is what turns that into a working panel for the person
+# sitting at the machine.
+#
+# Three things have to happen here rather than in the payload:
+#
+#   1. CEP only loads extensions from the *user's* own extensions directory
+#      (or the system one, which needs a signed ZXP — see 2). A pkg payload
+#      installs as root, so an extension placed in ~/Library by the payload
+#      would be root-owned, and the panel's own ⟳ updater unzips as the user:
+#      it would fail forever on files it cannot write. So the extension is
+#      copied here, as the console user, with their ownership.
+#
+#   2. PlayerDebugMode. An extension that is not signed with ZXPSignCmd is
+#      ignored by CEP *silently* — no error, no entry in the Extensions menu.
+#      Turning it on is what makes an unsigned panel loadable at all, and it
+#      is a per-user preference, so it belongs here too.
+#
+#   3. Quarantine. Everything that arrives through a pkg is flagged, and a
+#      quarantined ffmpeg is killed by Gatekeeper the first time the panel
+#      spawns it.
+#
+# What this deliberately does NOT do is touch
+# ~/Library/Application Support/APEnhance_wav_preset.epr. That is the old
+# Adobe Podcast panel's export-preset cache, and this panel never reads it:
+# it ships its own .epr and caches under its own name (jsx/host.jsx
+# _findOrCreatePreset), so there is nothing to clean up and no reason to
+# delete another extension's file.
+#
+# Exit code: anything non-zero aborts the install and tells the user it
+# failed, so only genuinely fatal problems return non-zero. A missing
+# defaults command or a stale preference is not worth refusing to install
+# over; a missing payload is.
+set -e
+
+SUPPORT_DIR="/Library/Application Support/AudioPro"
+TEMPLATE="$SUPPORT_DIR/Premiere/extension"
+BUNDLE_ID="com.danielgutierrez.audiopro"
+
+log() { echo "[audiopro-postinstall] $*"; }
+
+[ -d "$TEMPLATE" ] || { log "payload missing at $TEMPLATE"; exit 1; }
+
+# `stat -f%Su /dev/console` is who is actually logged in — $USER and $HOME are
+# root's here. installer also passes nothing useful for this.
+CONSOLE_USER="$(stat -f%Su /dev/console 2>/dev/null || echo '')"
+case "$CONSOLE_USER" in
+  '' | root | loginwindow)
+    log "no console user; leaving the template in $TEMPLATE for a per-user install"
+    exit 0
+    ;;
+esac
+
+USER_HOME="$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | awk '{print $2}')"
+[ -n "$USER_HOME" ] || USER_HOME="/Users/$CONSOLE_USER"
+EXT_PARENT="$USER_HOME/Library/Application Support/Adobe/CEP/extensions"
+EXT_DIR="$EXT_PARENT/$BUNDLE_ID"
+
+log "installing the panel for $CONSOLE_USER → $EXT_DIR"
+mkdir -p "$EXT_PARENT"
+
+# --delete so a reinstall cannot leave a file from an older version behind;
+# the panel loads whatever is on disk, and a stale js/ file is a bug that
+# reproduces on exactly one machine.
+# bin/ is excluded because it does not come from the payload: the binaries
+# live in the shared support dir, and a dev checkout may have its own.
+rsync -a --delete --exclude 'bin/' "$TEMPLATE/" "$EXT_DIR/"
+chown -R "$CONSOLE_USER" "$EXT_DIR"
+
+# CEP reads the preference for its own major version, and which one Premiere
+# uses depends on the Premiere release. Setting the three in range costs
+# nothing and avoids "the panel is not in the menu" on a version we did not
+# anticipate.
+for v in 11 12 13; do
+  sudo -u "$CONSOLE_USER" defaults write "com.adobe.CSXS.$v" PlayerDebugMode 1 2>/dev/null \
+    || log "could not set PlayerDebugMode for CSXS.$v (continuing)"
+done
+# Preferences are cached per process; without this the value can be invisible
+# to a Premiere that was already running.
+sudo -u "$CONSOLE_USER" killall cfprefsd 2>/dev/null || true
+
+xattr -dr com.apple.quarantine "$SUPPORT_DIR" 2>/dev/null || true
+xattr -dr com.apple.quarantine "$EXT_DIR" 2>/dev/null || true
+chmod -R a+rX "$SUPPORT_DIR"
+chmod 755 "$SUPPORT_DIR/bin/ffmpeg" "$SUPPORT_DIR/bin/ffprobe" 2>/dev/null || true
+
+log "done — restart Premiere, then Window → Extensions → Audio Pro"
+exit 0

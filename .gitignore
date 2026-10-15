@@ -1,0 +1,11 @@
+node_modules/
+dist/
+build/
+
+# ffmpeg/ffprobe are fetched by scripts/fetch-bin.sh and packed into the .pkg;
+# they never travel in the repo (~80 MB) or in the ZXP.
+bin/
+plugin/bin/
+
+.DS_Store
+*.log

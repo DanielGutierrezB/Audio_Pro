@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Dev only: opens Chrome DevTools for the panel at http://localhost:8099.
+     Port 8099 because 8098 belongs to the Adobe Podcast Enhance panel, which
+     is usually installed on the same machine — two extensions on one port and
+     whichever loads second gets no DevTools at all.
+     Excluded from the ZXP and from the installer payload. -->
+<ExtensionList>
+  <Extension Id="com.danielgutierrez.audiopro.panel">
+    <HostList>
+      <Host Name="PPRO" Port="8099"/>
+    </HostList>
+  </Extension>
+  <Extension Id="com.danielgutierrez.audiopro.login">
+    <HostList>
+      <Host Name="PPRO" Port="8100"/>
+    </HostList>
+  </Extension>
+</ExtensionList>

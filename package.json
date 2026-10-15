@@ -1,0 +1,28 @@
+{
+  "name": "audio-pro-premiere",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Panel CEP para Premiere Pro: exporta cada secuencia, la limpia con Adobe Podcast y la masteriza con el pipeline de AudioPro",
+  "license": "MIT",
+  "author": "Daniel Gutiérrez",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/DanielGutierrezB/Audio_Pro.git"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js test/core/*.test.js",
+    "lint": "eslint .",
+    "setup:bin": "bash scripts/fetch-bin.sh",
+    "sync:core": "bash scripts/sync-core.sh",
+    "check:core": "bash scripts/check-core.sh",
+    "check:version": "bash scripts/check-version.sh",
+    "build:zxp": "bash scripts/build-zxp.sh",
+    "build:pkg": "bash scripts/build-pkg.sh"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "acorn": "^8.15.0",
+    "eslint": "^10.12.0",
+    "globals": "^17.13.0"
+  }
+}

@@ -1,0 +1,308 @@
+/* Audio Pro — panel CEP.
+   Dark by default because that is what Premiere is; the palette follows the
+   host's own greys rather than inventing one, so the panel reads as part of
+   the app and not as a web page embedded in it. */
+
+:root {
+  --bg: #14161b;
+  --panel: #1b1e25;
+  --panel-2: #22262f;
+  --border: rgba(255, 255, 255, .12);
+  --text: #e6edf3;
+  --muted: #9aa4b2;
+  --accent: #7c5cff;
+  --ok: #46c08b;
+  --warn: #e3a008;
+  --err: #e5534b;
+  --mango: #e39a3b;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 12px/1.45 -apple-system, "Segoe UI", sans-serif;
+  overflow: hidden;
+}
+
+/* ── header ── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+}
+header .title { display: flex; align-items: center; gap: 8px; flex: 1; }
+header .name { font-weight: 600; font-size: 13px; letter-spacing: .2px; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.pill:hover { border-color: var(--accent); color: var(--text); }
+.pill.has-update { border-color: var(--accent); color: var(--accent); }
+.upic { display: inline-block; }
+.upic.spinning { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.icon {
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+}
+.icon:hover { border-color: var(--border); color: var(--text); }
+
+/* ── connection ── */
+.conn {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+}
+.dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--err);
+  flex: none;
+}
+.dot.on { background: var(--ok); }
+.link {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 11px;
+  padding: 0;
+}
+.link:hover { text-decoration: underline; }
+
+.banner {
+  padding: 7px 12px;
+  background: rgba(227, 160, 8, .12);
+  border-bottom: 1px solid rgba(227, 160, 8, .3);
+  color: var(--warn);
+  font-size: 11px;
+}
+
+/* ── settings ── */
+.settings {
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--border);
+  max-height: 46vh;
+  overflow-y: auto;
+}
+.settings .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+  font-size: 11px;
+}
+.settings .row > span:first-child { flex: 1; color: var(--muted); }
+.settings .row.check { cursor: pointer; }
+.settings .row.check span { flex: 1; }
+.settings .row.stack { flex-direction: column; align-items: stretch; gap: 5px; }
+.settings .row.stack > span { color: var(--muted); }
+.settings b { color: var(--text); font-weight: 600; }
+.hint {
+  color: var(--muted);
+  font-size: 10px;
+  margin: -3px 0 9px;
+  opacity: .8;
+}
+.colors { display: flex; gap: 5px; }
+
+select, input[type="password"], input[type="text"] {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 11px;
+}
+input[type="range"] { flex: 1; max-width: 130px; accent-color: var(--accent); }
+input[type="checkbox"] { accent-color: var(--accent); }
+
+details summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 5px 0;
+  user-select: none;
+}
+details summary:hover { color: var(--text); }
+details[open] summary { margin-bottom: 6px; }
+
+/* ── actions ── */
+.actions {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+}
+.actions button {
+  flex: 1;
+  padding: 7px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.actions button:hover:not(:disabled) { border-color: var(--accent); }
+.actions .primary { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+.actions .primary:hover:not(:disabled) { filter: brightness(1.1); }
+button:disabled { opacity: .45; cursor: default; }
+
+.small {
+  padding: 4px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+}
+.small:hover:not(:disabled) { border-color: var(--accent); color: var(--text); }
+.btnrow { display: flex; gap: 6px; margin-top: 6px; }
+
+/* ── list ── */
+.list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 12px 10px;
+}
+.listhead {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.listhead .spacer { flex: 1; }
+
+#queueList { list-style: none; overflow-y: auto; flex: 1; min-height: 0; }
+#queueList li {
+  position: relative;
+  padding: 7px 9px;
+  margin-bottom: 4px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+#queueList li .top { display: flex; align-items: baseline; gap: 7px; }
+#queueList li .name {
+  flex: 1;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#queueList li .st { font-size: 10px; color: var(--muted); white-space: nowrap; }
+#queueList li .tag {
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+/* The progress bar is the bottom edge of the row rather than a separate
+   element: a class is 40 minutes of mastering, and a row that is 1 px taller
+   when it is busy makes the list jump. */
+#queueList li .bar {
+  position: absolute;
+  left: 0; bottom: 0;
+  height: 2px;
+  background: var(--accent);
+  transition: width .3s ease;
+}
+#queueList li.work { border-color: rgba(124, 92, 255, .4); }
+#queueList li.work .st { color: var(--accent); }
+#queueList li.mango { border-left: 2px solid var(--mango); }
+#queueList li.done { border-color: rgba(70, 192, 139, .35); }
+#queueList li.done .st { color: var(--ok); }
+#queueList li.err { border-color: rgba(229, 83, 75, .4); }
+#queueList li.err .st { color: var(--err); }
+#queueList li .retry {
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+#queueList li .retry:hover { border-color: var(--accent); color: var(--text); }
+
+.empty {
+  color: var(--muted);
+  font-size: 11px;
+  padding: 14px 4px;
+  text-align: center;
+  line-height: 1.6;
+}
+
+/* ── toast ── */
+footer {
+  padding: 7px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+footer[data-type="success"] { color: var(--ok); }
+footer[data-type="warn"] { color: var(--warn); }
+footer[data-type="error"] { color: var(--err); }
+
+/* ── tooltip ── */
+.tip {
+  position: fixed;
+  z-index: 99;
+  max-width: 230px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #0b0d11;
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 1.4;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.tip.show { opacity: 1; }

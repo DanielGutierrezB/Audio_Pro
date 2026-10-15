@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' 'unsafe-inline' https://podcast.adobe.com https://*.adobe.io https://*.adobelogin.com https://api.github.com https://*.githubusercontent.com data:; frame-src https://podcast.adobe.com;" />
+  <title>Audio Pro</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <header>
+    <div class="title">
+      <span class="name">Audio Pro</span>
+      <button id="updateBtn" class="pill" data-tip="Buscar actualizaciones">
+        <span class="upic">⟳</span><span id="versionLabel">v0.1.0</span>
+      </button>
+    </div>
+    <button id="gearBtn" class="icon" data-tip="Ajustes">⚙</button>
+  </header>
+
+  <div id="connBar" class="conn">
+    <span id="dot" class="dot"></span>
+    <span id="connText">Desconectado</span>
+    <button id="connectBtn" class="link">Conectar con Adobe</button>
+  </div>
+
+  <div id="limitBanner" class="banner" hidden>
+    <span id="limitText"></span>
+  </div>
+
+  <section id="settingsPanel" class="settings" hidden>
+    <label class="row">
+      <span>Preset de entrega</span>
+      <select id="platformPreset">
+        <option value="platzi">Platzi · −16 LUFS</option>
+        <option value="youtube">YouTube · −14 LUFS</option>
+        <option value="podcast">Podcast · −16 LUFS / −1 dBTP</option>
+      </select>
+    </label>
+
+    <label class="row">
+      <span>Mezcla original <b id="fusionVal">20%</b></span>
+      <input type="range" id="fusionOriginalPct" min="0" max="40" step="1" />
+    </label>
+    <p class="hint">Cuánto del audio original queda por debajo de la voz limpia.</p>
+
+    <label class="row check">
+      <input type="checkbox" id="muteOthers" />
+      <span>Mutear las otras pistas al colocar</span>
+    </label>
+
+    <div class="row">
+      <span>Colores del clip</span>
+      <span class="colors">
+        <select id="labelInProgress" data-tip="Mientras masteriza"></select>
+        <select id="labelDone" data-tip="Al terminar"></select>
+      </span>
+    </div>
+
+    <details id="advanced">
+      <summary>Avanzado</summary>
+      <label class="row">
+        <span>Modo de fusión</span>
+        <select id="fusionMode">
+          <option value="bands">Bandas (recomendado)</option>
+          <option value="bed">Cama del original</option>
+          <option value="bands_bed">Bandas + cama</option>
+        </select>
+      </label>
+      <label class="row">
+        <span>Tono objetivo <b id="tiltVal">14</b></span>
+        <input type="range" id="toneTiltTarget" min="6" max="22" step="1" />
+      </label>
+      <p class="hint">Más alto = más cálido; más bajo = más brillante.</p>
+      <label class="row">
+        <span>De-esser <b id="deEsserVal">auto</b></span>
+        <input type="range" id="deEsserAmount" min="0" max="100" step="5" />
+      </label>
+      <label class="row">
+        <span>Aire / exciter <b id="airVal">0</b></span>
+        <input type="range" id="airExtraAmount" min="0" max="100" step="5" />
+      </label>
+      <label class="row">
+        <span>Cuerpo (paralelo) <b id="bodyVal">0</b></span>
+        <input type="range" id="bodyPct" min="0" max="100" step="5" />
+      </label>
+
+      <div class="row stack">
+        <span>¿La ventana de login no abre?</span>
+        <input type="password" id="tokenInput" placeholder="Pegá el token (eyJ…)" />
+        <div class="btnrow">
+          <button id="useTokenBtn" class="small">Usar este token</button>
+          <button id="openAdobeBtn" class="small">Abrir Adobe</button>
+        </div>
+      </div>
+
+      <div class="btnrow">
+        <button id="dlLogBtn" class="small">Descargar log</button>
+        <button id="logoutBtn" class="small">Cerrar sesión</button>
+      </div>
+      <p class="hint" id="engineInfo"></p>
+    </details>
+  </section>
+
+  <section class="actions">
+    <button id="activeBtn" class="primary">Secuencia activa</button>
+    <button id="inoutBtn">In → Out</button>
+    <button id="loadBtn">Cargar secuencias</button>
+  </section>
+
+  <section class="list">
+    <div class="listhead">
+      <span id="queueCount">0 secuencias</span>
+      <span class="spacer"></span>
+      <button id="runBtn" class="small">▶ Procesar</button>
+      <button id="clearDoneBtn" class="small" data-tip="Quitar las terminadas">Limpiar</button>
+    </div>
+    <ul id="queueList"></ul>
+    <p id="queueEmpty" class="empty">
+      Abrí una secuencia y tocá <b>Secuencia activa</b>, o <b>Cargar secuencias</b>
+      para traer todas las que tengas abiertas.
+    </p>
+  </section>
+
+  <footer>
+    <span id="toastText">Listo.</span>
+  </footer>
+
+  <script src="lib/CSInterface.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,79 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  # Named `test` because that is the status check the branch ruleset requires.
+  test:
+    # macos-15 is arm64, which is what the panel ships to and the only platform
+    # the pinned ffmpeg build exists for. It also matters for correctness, not
+    # just convenience: the mastering chain uses adynamicequalizer options that
+    # older ffmpeg builds reject, so testing against any other binary tests
+    # something that never ships (audio_education/docs/PREMIERE-INTEGRATION.md
+    # §12 — this is how a de-esser that attenuated the whole top end stayed
+    # green for months).
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dev dependencies
+        run: npm ci
+
+      - name: Fetch the pinned ffmpeg/ffprobe (arm64, SHA256-verified)
+        run: npm run setup:bin
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Core matches its upstream tag
+        run: npm run check:core
+
+      - name: Version is consistent across manifest, package.json and the panel
+        run: npm run check:version
+
+      - name: Run tests
+        run: npm test
+
+      - name: Build the ZXP
+        run: npm run build:zxp
+
+      - name: Build the installer
+        run: npm run build:pkg
+
+      # Proves the installer is well-formed and that its payload carries the
+      # extension and the binaries, rather than trusting pkgbuild's exit code.
+      # The postinstall script itself is covered by test/pkg.test.js, which
+      # runs it against a temporary HOME.
+      - name: Inspect the installer payload
+        run: |
+          set -euo pipefail
+          pkg="$(find dist -maxdepth 1 -name '*.pkg' -print -quit)"
+          [ -n "$pkg" ] || { echo "no .pkg under dist/" >&2; exit 1; }
+          pkgutil --expand "$pkg" dist/expanded
+          ls dist/expanded
+          payload="$(find dist/expanded -name Payload -print -quit)"
+          tar -tzf "$payload" > dist/payload.txt
+          for want in \
+            'AudioPro/bin/ffmpeg' \
+            'AudioPro/bin/ffprobe' \
+            'AudioPro/Premiere/extension/CSXS/manifest.xml' \
+            'AudioPro/Premiere/extension/core/pipeline.js' \
+            'AudioPro/Premiere/extension/jsx/host.jsx' \
+            'AudioPro/uninstall-premiere.sh'; do
+            grep -q "$want" dist/payload.txt || {
+              echo "✗ payload is missing $want" >&2; exit 1; }
+          done
+          if grep -q 'extension/\.debug' dist/payload.txt; then
+            echo "✗ the dev .debug file leaked into the installer" >&2
+            exit 1
+          fi
+          echo "✓ payload looks right"

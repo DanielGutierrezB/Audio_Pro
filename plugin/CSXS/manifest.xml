@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.danielgutierrez.audiopro"
+    ExtensionBundleVersion="0.1.0" ExtensionBundleName="Audio Pro"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ExtensionList>
+    <Extension Id="com.danielgutierrez.audiopro.panel" Version="0.1.0"/>
+    <Extension Id="com.danielgutierrez.audiopro.login" Version="0.1.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="PPRO" Version="[24.0,99.9]"/>
+    </HostList>
+    <LocaleList><Locale Code="All"/></LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="12.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.danielgutierrez.audiopro.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/host.jsx</ScriptPath>
+          <CEFCommandLine>
+            <!-- Node is what makes the whole design possible: the mastering
+                 chain runs in this process, spawning ffmpeg as a child, so
+                 Premiere stays responsive while a class is mastering. -->
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+            <Parameter>--disable-web-security</Parameter>
+            <Parameter>--allow-file-access-from-files</Parameter>
+            <!-- CEP 11+ (CEF 88+) isolates cross-origin iframes per site; this
+                 reverts that isolation so the invisible reauth iframe can read
+                 window.adobeIMS from podcast.adobe.com's own page. -->
+            <Parameter>--disable-site-isolation-trials</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle><AutoVisible>true</AutoVisible></Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>Audio Pro</Menu>
+          <Geometry>
+            <Size><Height>620</Height><Width>400</Width></Size>
+            <MinSize><Height>420</Height><Width>320</Width></MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+    <!-- Login window: window.open() is NOT supported in CEP (Adobe blocks it
+         by design). The official path for a login/SSO flow is a separate
+         ModalDialog extension, which CEP creates as its own native window and
+         therefore never reaches Chromium's popup blocker.
+         AutoVisible MUST be true: false is the invisible-extension pattern
+         (the window would open but never show), as Adobe's own
+         CEP_HTML_Test_Extension sample declares for its ModalDialog.
+         Because this is a *new* extension id, CEP only registers it after
+         Premiere restarts once — which is why the installer says so. -->
+    <Extension Id="com.danielgutierrez.audiopro.login">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./login.html</MainPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+            <Parameter>--disable-web-security</Parameter>
+            <Parameter>--allow-file-access-from-files</Parameter>
+            <Parameter>--disable-site-isolation-trials</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle><AutoVisible>true</AutoVisible></Lifecycle>
+        <UI>
+          <Type>ModalDialog</Type>
+          <Menu>Conectar con Adobe</Menu>
+          <Geometry>
+            <Size><Height>720</Height><Width>560</Width></Size>
+            <MinSize><Height>480</Height><Width>420</Width></MinSize>
+          </Geometry>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>
