@@ -63,27 +63,16 @@ fetch_osxexperts ffmpeg "$FFMPEG_ZIP_SHA256"
 fetch_osxexperts ffprobe "$FFPROBE_ZIP_SHA256"
 
 # The whole point of pinning a specific build is the filter set, so check it
-# rather than trusting the download.
-MAJOR="$("$BIN/ffmpeg" -version | head -n 1 | sed -n 's/^ffmpeg version \([0-9]*\).*/\1/p')"
-if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 7 ]; then
-  echo "✗ $BIN/ffmpeg reports major version '${MAJOR:-?}' — the chain needs 7 or newer" >&2
-  exit 1
-fi
-# Matched against a shell variable instead of through a pipe. `grep -q` exits
-# the moment it matches, the writer upstream then dies of SIGPIPE, and under
-# `pipefail` that turns a *successful* match into a failed pipeline — which is
-# exactly how this check first reported a filter as missing when it was there.
-FILTERS="$("$BIN/ffmpeg" -hide_banner -filters 2>/dev/null)"
-for filter in adynamicequalizer acrossover aexciter adeclick adeclip loudnorm alimiter; do
-  # Each row is " TS <name> A->A  <description>", so the name is surrounded by
-  # whitespace; matching it bare would let `adeclick` satisfy a search for a
-  # filter whose name is a prefix of another.
-  if [[ "$FILTERS" != *[[:space:]]"$filter"[[:space:]]* ]]; then
-    echo "✗ $BIN/ffmpeg is missing the '$filter' filter" >&2
-    exit 1
-  fi
-done
+# rather than trusting the download — with the panel's own check
+# (plugin/core/bin-paths.js verify), so the installer can never ship a binary
+# the panel would then refuse, and the minimum version and filter list exist
+# in exactly one place.
+node -e '
+  const v = require(process.argv[1]).verify(process.argv[2]);
+  if (!v.ok) { console.error("✗ " + v.reason); process.exit(1); }
+  console.log("✓ ffmpeg " + v.major + ".x, every filter the chain needs is present");
+' "$ROOT/plugin/core/bin-paths.js" "$BIN"
 
 echo
-echo "✓ Bundled binaries ready (ffmpeg $MAJOR.x, all required filters present):"
+echo "✓ Bundled binaries ready:"
 ls -lh "$BIN"

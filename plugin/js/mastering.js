@@ -37,7 +37,6 @@ async function masterOne({
   sequenceName,
   onProgress = () => {},
   onNote = () => {},
-  isCancelled = () => false,
   setCurrent = () => {},
 }) {
   const file = { path: originalPath, pairPath: enhancedPath };
@@ -93,12 +92,12 @@ async function masterOne({
     }
   };
 
-  await pipeline.processQueue([file], { emit, isCancelled, setCurrent, settings });
+  await pipeline.processQueue([file], { emit, isCancelled: () => false, setCurrent, settings });
 
   if (error) return { ok: false, error };
   if (skipped) return { ok: false, error: `el pipeline saltó el archivo (${skipped})` };
   if (!outputPath) {
-    return { ok: false, error: isCancelled() ? 'cancelado' : 'el pipeline no devolvió un master' };
+    return { ok: false, error: 'el pipeline no devolvió un master' };
   }
 
   const sidecarPath = writeSidecar(outputPath, {
@@ -114,12 +113,13 @@ async function masterOne({
     settings,
   });
 
+  if (!sidecarPath) onNote('⚠ no pude escribir el JSON del master (QC, loudness, motor)');
   return { ok: true, outputPath, mode, verify, flags, tilt, sidecarPath };
 }
 
 // Written next to the master, same stem, .json. Best-effort: a sidecar that
-// cannot be written is not worth failing a finished master over, but the row
-// says so because its absence is itself a symptom.
+// cannot be written is not worth failing a finished master over. Returns null
+// in that case, and masterOne logs it, because its absence is itself a symptom.
 function writeSidecar(outputPath, data) {
   const sidecarPath = outputPath.replace(/\.[^.]+$/, '') + '.json';
   const binDir = binPaths.getBinDir();
@@ -158,8 +158,7 @@ function writeSidecar(outputPath, data) {
   }
 }
 
-// What the panel logs after a master lands. Kept here so the row, the log and
-// the sidecar all describe the result the same way.
+// The one-line log entry for a finished master.
 function describeResult(result) {
   if (!result.ok) return result.error;
   const v = result.verify || {};

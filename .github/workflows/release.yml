@@ -15,7 +15,13 @@ permissions:
   contents: write
 
 jobs:
+  # Every installed panel is told about a new release automatically, so the
+  # full suite runs against the tagged commit before anything is published.
+  test:
+    uses: ./.github/workflows/test.yml
+
   release:
+    needs: test
     # Needs macOS for pkgbuild/productbuild and for the arm64 binaries.
     runs-on: macos-15
     timeout-minutes: 25

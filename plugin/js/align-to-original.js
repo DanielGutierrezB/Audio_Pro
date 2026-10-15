@@ -101,15 +101,13 @@ async function render(enhancedPath, outPath, shiftSec, targetDuration, opts = {}
 //   null             — nothing to report, durations already matched
 //   'REALIGNED'      — a confident offset was found and corrected
 //   'PADDED'         — no offset, but the lengths differed; padded/cut to fit
-//   'PAIR?'          — the offset could not be established and the durations
-//                      disagree by more than the pipeline's own tolerance.
-//                      The file is still produced and still placed, because a
+//   'PAIR?'          — the durations disagree and no plausible offset explains
+//                      it (none found with confidence, or one too large to be
+//                      a trim). The file is still produced and still placed, because a
 //                      suspicious pair is not a reason to throw away an Adobe
 //                      pass the user paid credits for — but the caller should
 //                      not master it unattended.
-async function alignToOriginal(originalPath, enhancedPath, outPath, opts = {}) {
-  const { onStatus = () => {}, setCurrent } = opts;
-
+async function alignToOriginal(originalPath, enhancedPath, outPath, { setCurrent } = {}) {
   const [origDur, enhDur] = await Promise.all([
     durationOf(originalPath),
     durationOf(enhancedPath),
@@ -118,27 +116,20 @@ async function alignToOriginal(originalPath, enhancedPath, outPath, opts = {}) {
     throw new Error('no pude medir la duración del par (¿archivo corrupto?)');
   }
 
-  const diff = Math.abs(origDur - enhDur);
-
-  // Same length already: Adobe did not trim anything. Still re-rendered rather
-  // than copied, so that what reaches the pipeline is always 24-bit/48k/mono
-  // no matter what Adobe returned (it has changed format before).
-  if (diff <= DURATION_TOLERANCE_SEC) {
-    onStatus('alineando');
-    await render(enhancedPath, outPath, 0, origDur, { setCurrent });
-    return {
-      ok: true, outPath, shiftSec: 0, correlation: null,
-      confident: true, duration: origDur, note: null,
-    };
-  }
-
-  onStatus('alineando');
-  const shift = await align.estimateOffset(originalPath, enhancedPath);
+  // Same length already means Adobe trimmed nothing, so there is no offset to
+  // look for. The file is still re-rendered rather than copied, so that what
+  // reaches the pipeline is always 24-bit/48k/mono whatever Adobe returned.
+  const sameLength = Math.abs(origDur - enhDur) <= DURATION_TOLERANCE_SEC;
+  const shift = sameLength
+    ? { offsetSec: 0, correlation: null, confident: true }
+    : await align.estimateOffset(originalPath, enhancedPath);
 
   // estimateOffset reports how far the enhanced sits from the original:
   // positive means it starts later in the take, i.e. its head was trimmed.
   // That is also the amount of silence it needs back.
   const shiftSec = shift.offsetSec ?? 0;
+  // A confident answer this large is still not a trim, it is a different
+  // recording — so it counts as unusable, exactly like an unconfident one.
   const usable = shift.confident && Math.abs(shiftSec) <= MAX_PLAUSIBLE_SHIFT_SEC;
 
   await render(enhancedPath, outPath, usable ? shiftSec : 0, origDur, { setCurrent });
@@ -150,10 +141,10 @@ async function alignToOriginal(originalPath, enhancedPath, outPath, opts = {}) {
     );
   }
 
-  let note;
-  if (usable && Math.abs(shiftSec) > NEGLIGIBLE_SEC) note = 'REALIGNED';
-  else if (shift.confident) note = 'PADDED';
-  else note = 'PAIR?';
+  let note = null;
+  if (!usable) note = 'PAIR?';
+  else if (Math.abs(shiftSec) > NEGLIGIBLE_SEC) note = 'REALIGNED';
+  else if (!sameLength) note = 'PADDED';
 
   return {
     ok: true,

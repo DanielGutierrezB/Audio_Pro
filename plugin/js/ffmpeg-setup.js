@@ -27,7 +27,6 @@ const fs = require('fs');
 const os = require('os');
 const { execFile } = require('child_process');
 const crypto = require('crypto');
-const zlib = require('zlib');
 
 const binPaths = require('../core/bin-paths');
 
@@ -41,7 +40,6 @@ const binPaths = require('../core/bin-paths');
 const BUILDS = {
   'darwin-arm64': {
     label: 'macOS Apple Silicon',
-    archive: 'zip',
     files: {
       ffmpeg: {
         url: 'https://www.osxexperts.net/ffmpeg81arm.zip',
@@ -66,17 +64,27 @@ function platformKey() {
 // What the panel logs on startup. The point is that the log answers "which
 // ffmpeg did this render actually use?" without anyone having to guess, and
 // the sidecar JSON next to each master records the same string.
+//
+// A verdict of "usable" is cached for the session: verifying costs three
+// synchronous ffmpeg processes on the panel's UI thread, and it runs before
+// every Procesar. A negative verdict is not cached, so installing a binary
+// takes effect without reloading the panel.
+let usable = null;
+
 function describe() {
+  if (usable && binPaths.getBinDir() === usable.dir) return usable;
   const dir = binPaths.getBinDir();
   if (!dir) return { ok: false, dir: null, version: null, reason: 'no ffmpeg found' };
   const check = binPaths.verify(dir);
-  return {
+  const info = {
     ok: check.ok,
     dir,
     major: check.major ?? null,
     version: binPaths.versionLine(dir),
     reason: check.ok ? null : check.reason,
   };
+  usable = info.ok ? info : null;
+  return info;
 }
 
 function sha256(buf) {
@@ -89,16 +97,10 @@ async function download(url) {
   return Buffer.from(await res.arrayBuffer());
 }
 
-// Extraction without a zip library: macOS has ditto, Windows has tar. A .gz is
-// handled in-process because zlib is already there.
-function extract(archivePath, entry, destPath, kind) {
+// Extraction without a zip library: macOS has ditto, and Windows (v0.2.0, see
+// BUILDS) has tar.
+function extract(archivePath, entry, destPath) {
   return new Promise((resolve, reject) => {
-    if (kind === 'gz') {
-      try {
-        fs.writeFileSync(destPath, zlib.gunzipSync(fs.readFileSync(archivePath)));
-        return resolve();
-      } catch (err) { return reject(err); }
-    }
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-unzip-'));
     const [cmd, args] = process.platform === 'win32'
       ? ['tar', ['-xf', archivePath, '-C', dir]]
@@ -165,7 +167,7 @@ async function install(onStatus = () => {}) {
     const tmpArchive = path.join(os.tmpdir(), `audiopro-${name}-${Date.now()}`);
     fs.writeFileSync(tmpArchive, buf);
     try {
-      await extract(tmpArchive, spec.entry, target, build.archive);
+      await extract(tmpArchive, spec.entry, target);
     } finally {
       try { fs.unlinkSync(tmpArchive); } catch { /* best effort */ }
     }
@@ -185,16 +187,23 @@ async function install(onStatus = () => {}) {
   return { dir: dest, major: check.major };
 }
 
-// What the panel calls on startup: returns a description, and downloads only
-// when there is nothing usable. Resolves to { ok, dir, version, installed }.
+// What the panel calls before spending credits: downloads only when there is
+// nothing usable, and throws unless the binary bin-paths will actually pick
+// afterwards can run the chain. The download lands in ~/.audio-pro/bin, which
+// is not first in the search order, so a broken binary higher up would still
+// win — saying "ready" in that case would spend Adobe credits on a sequence
+// that then cannot be mastered.
 async function ensure(onStatus = () => {}) {
   const current = describe();
   if (current.ok) return { ...current, installed: false };
 
   onStatus('No encontré un ffmpeg que sirva — lo descargo una sola vez…');
-  const installed = await install(onStatus);
+  await install(onStatus);
   const after = describe();
-  return { ...after, installed: true, dir: after.dir ?? installed.dir };
+  if (!after.ok) {
+    throw new Error(`instalé ffmpeg, pero el que se usaría (${after.dir}) no sirve: ${after.reason}`);
+  }
+  return { ...after, installed: true };
 }
 
 module.exports = {

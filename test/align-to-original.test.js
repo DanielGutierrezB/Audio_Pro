@@ -18,41 +18,15 @@ const os = require('os');
 const path = require('path');
 
 const aligner = require('../plugin/js/align-to-original');
-const { runFfmpeg } = require('../plugin/core/ffmpeg-run');
+const align = require('../plugin/core/align');
+const { buildSpeechLike } = require('./speech-fixture');
 
 const HEAD_SILENCE_SEC = 3;
-const SPEECH_SEC = 6;
 
 let workDir;
 
 before(() => { workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-align-')); });
 after(() => { if (workDir) fs.rmSync(workDir, { recursive: true, force: true }); });
-
-// Speech-ish rather than a steady tone on purpose: align.js refuses to trust a
-// correlation computed from a flat envelope (every lag "matches" a constant
-// tone equally well), so a sine fixture would exercise the refusal path
-// instead of the alignment path.
-async function buildSpeechLike(outPath, { silenceHead = 0, duration = SPEECH_SEC } = {}) {
-  const words = [];
-  for (let i = 0; i < Math.floor(duration); i++) {
-    // alternating loud/quiet seconds = an envelope with shape
-    words.push(`sine=frequency=${180 + (i % 3) * 40}:duration=0.6`, 'anullsrc=duration=0.4:r=48000');
-  }
-  const inputs = words.map(w => ['-f', 'lavfi', '-i', w]).flat();
-  const concat = words.map((_, i) => `[${i}:a]`).join('') + `concat=n=${words.length}:v=0:a=1[speech]`;
-  const head = silenceHead > 0
-    ? `;[speech]adelay=delays=${silenceHead * 1000}:all=1[out]`
-    : ';[speech]acopy[out]';
-
-  await runFfmpeg([
-    '-y', ...inputs,
-    '-filter_complex', concat + head,
-    '-map', '[out]',
-    '-c:a', 'pcm_s24le', '-ar', '48000', '-ac', '1',
-    outPath,
-  ], { timeout: 120000 });
-  return outPath;
-}
 
 test('an Adobe return with its head trimmed is pushed back onto the original\'s clock', async () => {
   const original = await buildSpeechLike(path.join(workDir, 'original.wav'), { silenceHead: HEAD_SILENCE_SEC });
@@ -108,6 +82,23 @@ test('a shorter return is padded to length rather than left short', async () => 
     `padded to ${alignedDur.toFixed(3)}s, original is ${origDur.toFixed(3)}s`,
   );
   assert.ok(res.ok);
+});
+
+test('a confident but implausibly large shift is flagged, not mastered unattended', async () => {
+  // A 45-second "offset" is not Adobe trimming silence, it is a different
+  // recording. align.js can still be confident about it, so the gate has to
+  // be the size: such a pair must come back as PAIR?, never as PADDED.
+  const real = align.estimateOffset;
+  align.estimateOffset = async () => ({ offsetSec: 45, correlation: 0.9, contrast: 0.5, confident: true });
+  try {
+    const original = await buildSpeechLike(path.join(workDir, 'far-orig.wav'), { duration: 8 });
+    const enhanced = await buildSpeechLike(path.join(workDir, 'far-enh.wav'), { duration: 6 });
+    const res = await aligner.alignToOriginal(original, enhanced, path.join(workDir, 'far-out.wav'));
+    assert.equal(res.note, 'PAIR?');
+    assert.equal(res.shiftSec, 0, 'an implausible shift is not applied');
+  } finally {
+    align.estimateOffset = real;
+  }
 });
 
 test('buildFilter picks delay or trim by sign, and always pads the tail', () => {

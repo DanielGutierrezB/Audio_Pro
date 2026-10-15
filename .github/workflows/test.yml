@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml calls this before publishing, so a tag cannot ship a build the
+  # suite has not passed.
+  workflow_call:
 
 jobs:
   # Named `test` because that is the status check the branch ruleset requires.

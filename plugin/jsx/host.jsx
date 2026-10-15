@@ -166,14 +166,17 @@ function _findOrCreatePreset() {
   return null;
 }
 
-// Busca en `dir` un archivo cuyo nombre empiece por `stem`, tolerando que
-// Premiere agregue o cambie la extensión (p.ej. deje "x.wav.wav" o "x.aif").
+// Busca en `dir` el export de `stem` tolerando que Premiere agregue o cambie
+// la extensión (p.ej. deje "x.wav.wav" o "x.aif"). Solo acepta `stem` seguido
+// de un punto: un prefijo suelto haría que "clase" encontrara "clase_2.wav" o
+// "clase_inout.wav" de una corrida anterior y lo diera por bueno.
 // Devuelve el File más pesado (el export real, no un sidecar vacío) o null.
 function _findExported(dir, stem) {
   try {
     var fold = new Folder(dir);
     if (!fold.exists) return null;
-    var all = fold.getFiles(function (f) { return (f instanceof File) && f.name.indexOf(stem) === 0; });
+    var prefix = stem + '.';
+    var all = fold.getFiles(function (f) { return (f instanceof File) && f.name.indexOf(prefix) === 0; });
     var best = null;
     for (var i = 0; i < all.length; i++) {
       if (all[i].length > 0 && (!best || all[i].length > best.length)) best = all[i];
@@ -271,13 +274,14 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label) {
     var mediaFile = new File(wavPath);
     if (!mediaFile.exists) return _json({ ok: false, error: 'No existe el WAV: ' + wavPath });
 
-    var binBefore = bin.children ? bin.children.numItems : 0;
     app.project.importFiles([mediaFile.fsName], true, bin, false);
+    // Se busca por ruta de media y no como "el último hijo del bin": el orden
+    // del bin depende del criterio de orden que tenga el usuario, y otro
+    // import en paralelo lo cambiaría.
     var item = null;
-    for (var w = 0; w < 30; w++) {
+    for (var w = 0; w < 30 && !item; w++) {
       $.sleep(250);
-      if (bin.children && bin.children.numItems > binBefore) { item = bin.children[bin.children.numItems - 1]; }
-      if (item) break;
+      item = _findChildByMediaPath(bin, mediaFile.fsName);
     }
     if (!item) return _json({ ok: false, error: 'No se encontró el clip importado' });
 
@@ -376,17 +380,6 @@ function ppRelinkMaster(nodeId, masterPath, label) {
   } catch (e) { return _json({ ok: false, error: String(e), debug: dbg }); }
 }
 
-// Solo el color, para marcar una fila que falló sin tocar el media.
-function ppSetLabel(nodeId, label) {
-  try {
-    var item = _findItemByNodeId(nodeId);
-    if (!item) return _json({ ok: false, error: 'NODE_NOT_FOUND' });
-    var colorLabel = _labelOr(label, LABEL_IN_PROGRESS);
-    try { item.setColorLabel(colorLabel); } catch (eCol) { return _json({ ok: false, error: String(eCol) }); }
-    return _json({ ok: true, label: colorLabel });
-  } catch (e) { return _json({ ok: false, error: String(e) }); }
-}
-
 // Renombrar el item (el panel lo usa para dejar "<secuencia> · Audio Pro" y
 // que en el bin se vea de un vistazo cuál ya está terminado).
 function ppRenameItem(nodeId, name) {
@@ -426,6 +419,15 @@ function _searchNode(root, target, depth) {
   return null;
 }
 
+function _findChildByMediaPath(bin, fsName) {
+  var kids = bin.children;
+  if (!kids) return null;
+  for (var i = kids.numItems - 1; i >= 0; i--) {
+    try { if (new File(kids[i].getMediaPath()).fsName === fsName) return kids[i]; } catch (e) {}
+  }
+  return null;
+}
+
 function _findBin(name) {
   var root = app.project.rootItem;
   for (var i = 0; i < root.children.numItems; i++) {
@@ -450,14 +452,24 @@ function _labelOr(value, fallback) {
   return n;
 }
 
+// Respaldo para hosts sin JSON nativo. Escapa lo que rompería el JSON en el
+// panel: comillas, barras invertidas (rutas de Windows) y saltos de línea
+// (mensajes de error de varias líneas).
 function _stringify(o) {
-  if (o === null) return 'null';
-  if (typeof o === 'object') {
-    var p = [];
-    if (o instanceof Array) { for (var i = 0; i < o.length; i++) p.push(_stringify(o[i])); return '[' + p.join(',') + ']'; }
-    for (var k in o) p.push('"' + k + '":' + _stringify(o[k]));
-    return '{' + p.join(',') + '}';
+  if (o === null || o === undefined) return 'null';
+  if (typeof o === 'number') return isFinite(o) ? String(o) : 'null';
+  if (typeof o === 'boolean') return String(o);
+  if (typeof o === 'string') {
+    return '"' + o.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+      .replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"';
   }
-  if (typeof o === 'string') return '"' + o.replace(/"/g, '\\"') + '"';
-  return String(o);
+  var p = [];
+  if (o instanceof Array) {
+    for (var i = 0; i < o.length; i++) p.push(_stringify(o[i]));
+    return '[' + p.join(',') + ']';
+  }
+  for (var k in o) {
+    if (o.hasOwnProperty(k) && o[k] !== undefined) p.push(_stringify(String(k)) + ':' + _stringify(o[k]));
+  }
+  return '{' + p.join(',') + '}';
 }

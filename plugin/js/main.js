@@ -10,10 +10,8 @@ var cs = new CSInterface();
 // it. Both are checked so a manifest change cannot silently break loading.
 var _require = (typeof require !== 'undefined') ? require : (window.cep_node ? window.cep_node.require : null);
 
-var APP_VERSION = '0.1.0';
-
 var pathN, fsN, osN;
-var EXT, WAV_PRESET;
+var EXT, WAV_PRESET, appVersion;
 var phonos, queueMod, aligner, mastering, settingsMod, updater, ffmpegSetup, adobeSession;
 var session, queue;
 var settings = {};
@@ -58,6 +56,9 @@ try {
   updater = _require(pathN.join(EXT, 'js', 'updater.js'));
   ffmpegSetup = _require(pathN.join(EXT, 'js', 'ffmpeg-setup.js'));
   adobeSession = _require(pathN.join(EXT, 'js', 'adobe-session.js'));
+  // The manifest is the one place the version is written down; it is also
+  // what the updater reads back after installing, so the two cannot disagree.
+  appVersion = updater.manifestVersion(EXT);
 
   log('Panel iniciado.');
 
@@ -115,7 +116,6 @@ var host = {
   relinkMaster: function (nodeId, masterPath, label) {
     return callHost('ppRelinkMaster', [nodeId, masterPath, label]);
   },
-  setLabel: function (nodeId, label) { return callHost('ppSetLabel', [nodeId, label]); },
   renameItem: function (nodeId, name) { return callHost('ppRenameItem', [nodeId, name]); },
 };
 
@@ -136,49 +136,62 @@ function fillLabelSelect(el) {
   }
 }
 
-function loadSettingsIntoUi() {
-  settings = settingsMod.load();
-  $('platformPreset').value = settings.platformPreset;
-  $('fusionMode').value = settings.fusionMode;
-  $('fusionOriginalPct').value = settings.fusionOriginalPct;
-  $('toneTiltTarget').value = settings.toneTiltTarget;
-  $('deEsserAmount').value = settings.deEsserAmount;
-  $('airExtraAmount').value = settings.airExtraAmount;
-  $('bodyPct').value = settings.bodyPct;
-  $('muteOthers').checked = settings.muteOthers;
-  $('labelInProgress').value = String(settings.labelInProgress);
-  $('labelDone').value = String(settings.labelDone);
-  renderSettingValues();
+// The controls in index.html are named after the setting they edit, so one
+// list of keys drives loading, reading and wiring; the type of each default
+// says how to read its control.
+function settingKeys() { return Object.keys(settingsMod.defaults()); }
+
+function offOrPct(v) { return v === 0 ? 'off' : v + '%'; }
+var VALUE_LABELS = {
+  fusionOriginalPct: ['fusionVal', function (v) { return v + '%'; }],
+  toneTiltTarget: ['tiltVal', String],
+  deEsserAmount: ['deEsserVal', function (v) { return v === 0 ? 'auto' : v + '%'; }],
+  airExtraAmount: ['airVal', offOrPct],
+  bodyPct: ['bodyVal', offOrPct],
+};
+
+function readControl(key) {
+  var el = $(key);
+  var kind = typeof settingsMod.defaults()[key];
+  if (kind === 'boolean') return el.checked;
+  if (kind === 'number') return parseInt(el.value, 10);
+  return el.value;
+}
+
+function writeControl(key, value) {
+  var el = $(key);
+  if (typeof value === 'boolean') el.checked = value;
+  else el.value = String(value);
 }
 
 function renderSettingValues() {
-  $('fusionVal').textContent = settings.fusionOriginalPct + '%';
-  $('tiltVal').textContent = settings.toneTiltTarget;
-  $('deEsserVal').textContent = settings.deEsserAmount === 0 ? 'auto' : settings.deEsserAmount + '%';
-  $('airVal').textContent = settings.airExtraAmount === 0 ? 'off' : settings.airExtraAmount + '%';
-  $('bodyVal').textContent = settings.bodyPct === 0 ? 'off' : settings.bodyPct + '%';
+  Object.keys(VALUE_LABELS).forEach(function (key) {
+    $(VALUE_LABELS[key][0]).textContent = VALUE_LABELS[key][1](settings[key]);
+  });
 }
 
-function readSettingsFromUi() {
-  var next = {
-    platformPreset: $('platformPreset').value,
-    fusionMode: $('fusionMode').value,
-    fusionOriginalPct: parseInt($('fusionOriginalPct').value, 10),
-    toneTiltTarget: parseInt($('toneTiltTarget').value, 10),
-    deEsserAmount: parseInt($('deEsserAmount').value, 10),
-    airExtraAmount: parseInt($('airExtraAmount').value, 10),
-    bodyPct: parseInt($('bodyPct').value, 10),
-    muteOthers: $('muteOthers').checked,
-    labelInProgress: parseInt($('labelInProgress').value, 10),
-    labelDone: parseInt($('labelDone').value, 10),
-  };
-  var res = settingsMod.save(next);
-  // save() drops anything that fails validation, so what comes back is what is
-  // actually in force — reading it back avoids the UI showing a value the
-  // pipeline will never receive.
+function loadSettingsIntoUi() {
   settings = settingsMod.load();
+  settingKeys().forEach(function (key) { writeControl(key, settings[key]); });
   renderSettingValues();
-  if (!res.ok) notify('No pude guardar los ajustes: ' + res.error, 'warn');
+}
+
+// While a slider is being dragged only the in-memory value moves; the file is
+// written once, when it is released. Either way a value the core would reject
+// never becomes the one in force.
+function readSettingsFromUi(persist) {
+  var next = {};
+  settingKeys().forEach(function (key) { next[key] = readControl(key); });
+  if (persist) {
+    var res = settingsMod.save(next);
+    if (!res.ok) notify('No pude guardar los ajustes: ' + res.error, 'warn');
+    settings = settingsMod.load();
+  } else {
+    settingKeys().forEach(function (key) {
+      if (settingsMod.accepts(key, next[key])) settings[key] = next[key];
+    });
+  }
+  renderSettingValues();
 }
 
 // ── rendering the queue ──
@@ -191,7 +204,8 @@ function renderQueue(items) {
   items.forEach(function (item) {
     var li = document.createElement('li');
     li.setAttribute('data-id', item.id);
-    li.className = rowClass(item);
+    var view = queue.view(item);
+    li.className = rowClass(item, view);
 
     var top = document.createElement('div');
     top.className = 'top';
@@ -203,17 +217,17 @@ function renderQueue(items) {
 
     if (item.workArea) top.appendChild(tag('In→Out'));
     if (item.runIndex > 1) top.appendChild(tag('#' + item.runIndex));
-    if (item.note === 'PAIR?') top.appendChild(tag('par dudoso'));
+    if (item.alignNote === 'PAIR?') top.appendChild(tag('par dudoso'));
     if (item.mode === 1) top.appendChild(tag('sin Adobe'));
 
     var st = document.createElement('span');
     st.className = 'st';
-    st.textContent = item.error || item.status;
+    st.textContent = view.text;
     top.appendChild(st);
 
     // Retrying resumes at the stage that failed, so it never re-exports and
     // never pays Adobe for a sequence that already came back.
-    if (item.error) {
+    if (view.retry) {
       var retry = document.createElement('button');
       retry.className = 'retry';
       retry.textContent = 'reintentar';
@@ -223,10 +237,10 @@ function renderQueue(items) {
 
     li.appendChild(top);
 
-    if (item.pct > 0 && item.pct < 100) {
+    if (view.pct > 0 && view.pct < 100) {
       var bar = document.createElement('div');
       bar.className = 'bar';
-      bar.style.width = item.pct + '%';
+      bar.style.width = view.pct + '%';
       li.appendChild(bar);
     }
 
@@ -234,10 +248,10 @@ function renderQueue(items) {
   });
 
   $('queueEmpty').style.display = items.length ? 'none' : 'block';
-  var pending = items.filter(function (i) { return i.stage !== queueMod.STAGE.DONE; }).length;
-  $('queueCount').textContent = items.length + ' secuencia' + (items.length === 1 ? '' : 's') +
+  var pending = queue.pending().length;
+  $('queueCount').textContent = queueMod.plural(items.length, 'secuencia') +
     (items.length ? ' · ' + pending + ' pend.' : '');
-  $('runBtn').disabled = pending === 0;
+  $('runBtn').disabled = busy || pending === 0;
   $('runBtn').textContent = '▶ Procesar' + (pending ? ' (' + pending + ')' : '');
 }
 
@@ -248,15 +262,13 @@ function tag(text) {
   return el;
 }
 
-// Once the clip is on the timeline the row carries the Mango edge too, so the
-// list and the project panel agree about what is still in progress.
-function rowClass(item) {
-  var S = queueMod.STAGE;
-  if (item.stage === S.DONE) return 'done';
-  var mango = item.nodeId ? ' mango' : '';
-  if (item.error) return 'err' + mango;
-  if (item.stage === S.PENDING) return mango.trim();
-  return 'work' + mango;
+// Once the clip is on the timeline and not yet relinked the row carries the
+// Mango edge too, so the list and the project panel agree about what is still
+// in progress.
+var TONE_CLASS = { work: 'work', err: 'err', done: 'done', idle: '' };
+function rowClass(item, view) {
+  var mango = item.nodeId && item.stage !== queueMod.STAGE.DONE ? 'mango' : '';
+  return [TONE_CLASS[view.tone], mango].filter(Boolean).join(' ');
 }
 
 // ffmpeg reports progress several times a second; rebuilding the list on each
@@ -325,6 +337,10 @@ async function runOne(workArea) {
   if (!seq.ok) { notify(seq.error || 'No hay una secuencia activa.', 'error'); return; }
 
   var item = queue.upsert(seq, { workArea: workArea });
+  if (!item) { notify(seq.name + ' ya se está procesando.', 'info'); return; }
+  if (item.stage !== queueMod.STAGE.PENDING) {
+    notify('Retomo ' + item.name + ' donde quedó — sin volver a gastar créditos.', 'info');
+  }
   await runQueue([item]);
 }
 
@@ -334,9 +350,8 @@ async function loadSequences() {
   var res = await host.getOpenSequences();
   if (!res.ok) { notify('Error al leer las secuencias: ' + res.error, 'error'); return; }
   var added = queue.addSequences(res.sequences);
-  notify(added
-    ? 'Cargué ' + added + ' secuencia' + (added === 1 ? '' : 's') + '.'
-    : 'No hay secuencias nuevas para cargar.', added ? 'success' : 'info');
+  notify(added ? 'Cargué ' + queueMod.plural(added, 'secuencia') + '.' : 'No hay secuencias nuevas para cargar.',
+    added ? 'success' : 'info');
 }
 
 async function runPending() {
@@ -346,29 +361,45 @@ async function runPending() {
   await runQueue(queue.pending());
 }
 
+async function retryRow(id) {
+  if (!(await ensureReady())) return;
+  await runQueue([queue.get(id)]);
+}
+
+// Every action is busy from the click itself, not from the moment it reaches
+// the queue: between the two sit host round-trips and possibly a 100 MB ffmpeg
+// download, and a second click in that window would start a second export and
+// a second Adobe upload. The ⟳ button is included because without an update
+// pending it reloads the panel, which would throw away an Adobe pass that was
+// already paid for.
 var busy = false;
+var BUSY_BUTTONS = ['activeBtn', 'inoutBtn', 'loadBtn', 'runBtn', 'updateBtn'];
 function setBusy(on) {
   busy = on;
-  ['activeBtn', 'inoutBtn', 'loadBtn', 'runBtn'].forEach(function (id) {
-    $(id).disabled = on;
-  });
+  BUSY_BUTTONS.forEach(function (id) { $(id).disabled = on; });
+  if (!on && queue) renderQueue(queue.all());
+}
+
+function guarded(action) {
+  return function () {
+    if (busy) return;
+    setBusy(true);
+    var args = arguments;
+    Promise.resolve()
+      .then(function () { return action.apply(null, args); })
+      .catch(function (e) { notify('Error: ' + (e.message || e), 'error'); })
+      .then(function () { setBusy(false); refreshLimitBanner(); });
+  };
 }
 
 async function runQueue(list) {
   if (!list.length) { notify('No hay nada pendiente.', 'info'); return; }
-  setBusy(true);
-  notify('Procesando ' + list.length + ' secuencia' + (list.length === 1 ? '' : 's') + '…', 'info');
-  try {
-    var res = await queue.process(list, { presetPath: WAV_PRESET });
-    notify('Terminado: ' + res.ok + ' lista' + (res.ok === 1 ? '' : 's') +
-      (res.failed ? ', ' + res.failed + ' con problemas' : '') + '.',
-    res.failed ? 'warn' : 'success');
-  } catch (e) {
-    notify('Error procesando: ' + (e.message || e), 'error');
-  } finally {
-    setBusy(false);
-    refreshLimitBanner();
-  }
+  notify('Procesando ' + queueMod.plural(list.length, 'secuencia') + '…', 'info');
+  var res = await queue.run(list, { presetPath: WAV_PRESET });
+  var parts = [queueMod.plural(res.done, 'lista')];
+  if (res.partial) parts.push(res.partial + ' para revisar');
+  if (res.failed) parts.push(res.failed + ' con problemas');
+  notify('Terminado: ' + parts.join(', ') + '.', res.failed ? 'warn' : 'success');
 }
 
 // Everything that must be true before a single credit is spent: a token, and
@@ -420,36 +451,34 @@ function showEngine() {
 
 // ── updates ──
 async function checkUpdate() {
-  var res = await updater.check(APP_VERSION);
+  var res = await updater.check(appVersion);
   if (res.error) { log('checkUpdate: ' + res.error); return; }
-  log('checkUpdate: local=' + APP_VERSION + ' remoto=' + res.tag);
+  log('checkUpdate: local=' + appVersion + ' remoto=' + res.tag);
   if (!res.available) return;
   latestAsset = res.assetUrl;
   $('updateBtn').classList.add('has-update');
   $('updateBtn').setAttribute('data-tip', 'Nueva versión ' + res.tag + ' — tocá para actualizar.');
-  $('versionLabel').textContent = 'v' + APP_VERSION + ' → ' + String(res.tag).replace(/^v/, '');
+  $('versionLabel').textContent = 'v' + appVersion + ' → ' + String(res.tag).replace(/^v/, '');
   notify('Actualización disponible: ' + res.tag + '. Tocá ⟳ para instalarla.', 'info');
 }
 
 async function doUpdate() {
-  var btn = $('updateBtn');
-  var ic = btn.querySelector('.upic');
-  if (!btn.classList.contains('has-update') || !latestAsset) {
+  if (!latestAsset) {
     notify('Recargando panel…', 'info');
     setTimeout(function () { window.location.reload(); }, 300);
     return;
   }
+  var ic = $('updateBtn').querySelector('.upic');
   ic.classList.add('spinning');
-  btn.disabled = true;
   try {
     var installed = await updater.install(latestAsset, EXT, function (m) { notify(m, 'info'); });
     notify('Actualizado ✓ (v' + installed + '). Recargando…', 'success');
     setTimeout(function () { window.location.reload(); }, 900);
   } catch (e) {
     updater.appendLog('FALLÓ: ' + (e.message || e));
-    ic.classList.remove('spinning');
-    btn.disabled = false;
     notify('La actualización falló: ' + (e.message || e) + '. Detalle en el log.', 'error');
+  } finally {
+    ic.classList.remove('spinning');
   }
 }
 
@@ -474,15 +503,15 @@ function wire() {
     var p = $('settingsPanel');
     p.hidden = !p.hidden;
   });
-  $('updateBtn').addEventListener('click', doUpdate);
+  $('updateBtn').addEventListener('click', guarded(doUpdate));
   $('connectBtn').addEventListener('click', openLogin);
-  $('activeBtn').addEventListener('click', function () { runOne(0); });
-  $('inoutBtn').addEventListener('click', function () { runOne(1); });
-  $('loadBtn').addEventListener('click', loadSequences);
-  $('runBtn').addEventListener('click', runPending);
+  $('activeBtn').addEventListener('click', guarded(function () { return runOne(0); }));
+  $('inoutBtn').addEventListener('click', guarded(function () { return runOne(1); }));
+  $('loadBtn').addEventListener('click', guarded(loadSequences));
+  $('runBtn').addEventListener('click', guarded(runPending));
   $('clearDoneBtn').addEventListener('click', function () {
     var n = queue.clearDone();
-    notify(n ? 'Quité ' + n + ' terminada' + (n === 1 ? '' : 's') + '.' : 'No hay terminadas para quitar.', 'info');
+    notify(n ? 'Quité ' + queueMod.plural(n, 'terminada') + '.' : 'No hay terminadas para quitar.', 'info');
   });
   $('dlLogBtn').addEventListener('click', downloadLog);
   $('logoutBtn').addEventListener('click', function () {
@@ -506,19 +535,16 @@ function wire() {
   });
 
   // Retry lives on the row, so it is delegated rather than bound per render.
+  var retry = guarded(retryRow);
   $('queueList').addEventListener('click', function (ev) {
     var id = ev.target.getAttribute && ev.target.getAttribute('data-retry');
-    if (!id || busy) return;
-    ensureReady().then(function (ready) {
-      if (ready) runQueue([queue.get(id)]);
-    });
+    if (id) retry(id);
   });
 
-  ['platformPreset', 'fusionMode', 'muteOthers', 'labelInProgress', 'labelDone'].forEach(function (id) {
-    $(id).addEventListener('change', readSettingsFromUi);
-  });
-  ['fusionOriginalPct', 'toneTiltTarget', 'deEsserAmount', 'airExtraAmount', 'bodyPct'].forEach(function (id) {
-    $(id).addEventListener('input', readSettingsFromUi);
+  settingKeys().forEach(function (key) {
+    var el = $(key);
+    el.addEventListener('change', function () { readSettingsFromUi(true); });
+    if (el.type === 'range') el.addEventListener('input', function () { readSettingsFromUi(false); });
   });
 }
 
@@ -574,7 +600,7 @@ function wire() {
 
   wire();
   renderQueue([]);
-  $('versionLabel').textContent = 'v' + APP_VERSION;
+  $('versionLabel').textContent = 'v' + appVersion;
 
   session.listenForToken(function () {
     notify('Conectado a Adobe.', 'success');

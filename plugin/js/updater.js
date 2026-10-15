@@ -74,7 +74,6 @@ async function check(currentVersion) {
       available: !!asset && isNewer(tag, currentVersion),
       tag,
       assetUrl: asset ? asset.browser_download_url : null,
-      assetName: asset ? asset.name : null,
     };
   } catch (err) {
     return { available: false, error: err.message };
@@ -113,9 +112,43 @@ function unzipInto(zipPath, dir) {
   });
 }
 
-// Downloads and installs `assetUrl` over `extDir`. Resolves to the version the
-// manifest reports afterwards, which is the only proof that the files on disk
-// actually changed.
+// Staging lives under ~/.audio-pro, not next to the extension: CEP registers
+// every directory in its extensions folder that has a manifest, so a leftover
+// copy there (from a crash mid-update) would show up as a second panel with
+// the same id. The home directory is on the same volume as ~/Library, which
+// is what keeps the renames below atomic.
+function stagingDir(name) { return path.join(supportDir(), name); }
+
+// Replaces `extDir` with the contents of `stagedDir` without ever leaving a
+// half-written extension behind. Two renames on the same volume, each atomic:
+// the old tree moves aside, the new one moves in, and only then is the old one
+// deleted. If the second rename fails the first is undone. A bin/ the user
+// (or a dev checkout) put inside the extension is carried over, because the
+// ZXP never contains one.
+function swapInto(stagedDir, extDir) {
+  const prev = stagingDir('update-prev');
+  fs.mkdirSync(path.dirname(prev), { recursive: true });
+  fs.rmSync(prev, { recursive: true, force: true });
+  const oldBin = path.join(extDir, 'bin');
+  if (fs.existsSync(oldBin) && !fs.existsSync(path.join(stagedDir, 'bin'))) {
+    fs.cpSync(oldBin, path.join(stagedDir, 'bin'), { recursive: true });
+  }
+  fs.renameSync(extDir, prev);
+  try {
+    fs.renameSync(stagedDir, extDir);
+  } catch (err) {
+    fs.renameSync(prev, extDir);
+    throw err;
+  }
+  fs.rmSync(prev, { recursive: true, force: true });
+}
+
+// Downloads `assetUrl` and installs it in place of `extDir`. The ZXP is
+// unzipped into a sibling directory and checked there first — a full tree with
+// a readable manifest of the version we expected — so a failed or truncated
+// extraction never touches the running extension, and files a new version
+// removed do not linger (the same reason pkg/scripts/postinstall uses
+// rsync --delete). Resolves to the installed version.
 async function install(assetUrl, extDir, onStatus = () => {}) {
   resetLog();
   appendLog('descargando ' + assetUrl);
@@ -134,17 +167,24 @@ async function install(assetUrl, extDir, onStatus = () => {}) {
 
   const tmpZxp = path.join(os.tmpdir(), `audiopro_update_${Date.now()}.zxp`);
   fs.writeFileSync(tmpZxp, buf);
-  appendLog(`${buf.length} bytes → descomprimiendo en ${extDir}`);
+  const staged = stagingDir('update-next');
+  fs.rmSync(staged, { recursive: true, force: true });
+  fs.mkdirSync(staged, { recursive: true });
+  appendLog(`${buf.length} bytes → descomprimiendo en ${staged}`);
   onStatus('Instalando…');
   try {
-    await unzipInto(tmpZxp, extDir);
+    await unzipInto(tmpZxp, staged);
+    const version = manifestVersion(staged);
+    if (version === '?' || !fs.existsSync(path.join(staged, 'index.html'))) {
+      throw new Error('el ZXP descomprimido no tiene un panel completo');
+    }
+    swapInto(staged, extDir);
+    appendLog(`OK, instalada la v${version}`);
+    return version;
   } finally {
     try { fs.unlinkSync(tmpZxp); } catch { /* best effort */ }
+    fs.rmSync(staged, { recursive: true, force: true });
   }
-
-  const installed = manifestVersion(extDir);
-  appendLog(`OK, el manifest ahora dice v${installed}`);
-  return installed;
 }
 
 function manifestVersion(extDir) {
@@ -162,6 +202,7 @@ module.exports = {
   isNewer,
   parseVersion,
   manifestVersion,
+  swapInto,
   unzipInto,
   appendLog,
   readLog,

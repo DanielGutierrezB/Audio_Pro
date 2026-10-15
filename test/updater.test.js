@@ -67,6 +67,37 @@ test('the update log survives the reload that ends the update', () => {
   }
 });
 
+test('an update swaps the whole extension at once, and keeps a local bin/', () => {
+  const previous = process.env.HOME;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-swap-'));
+  process.env.HOME = home;
+  try {
+    const ext = path.join(home, 'ext');
+    fs.mkdirSync(path.join(ext, 'js'), { recursive: true });
+    fs.mkdirSync(path.join(ext, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(ext, 'js', 'removed-in-new-version.js'), 'old');
+    fs.writeFileSync(path.join(ext, 'bin', 'ffmpeg'), 'binary');
+
+    const staged = path.join(home, 'staged');
+    fs.mkdirSync(path.join(staged, 'js'), { recursive: true });
+    fs.writeFileSync(path.join(staged, 'js', 'main.js'), 'new');
+
+    updater.swapInto(staged, ext);
+
+    assert.ok(fs.existsSync(path.join(ext, 'js', 'main.js')));
+    // An in-place unzip would have left this behind; the panel loads whatever
+    // is on disk, so a stale file is a bug that reproduces on one machine.
+    assert.equal(fs.existsSync(path.join(ext, 'js', 'removed-in-new-version.js')), false);
+    // The ZXP never carries binaries, so one living in the extension survives.
+    assert.equal(fs.readFileSync(path.join(ext, 'bin', 'ffmpeg'), 'utf8'), 'binary');
+    // Nothing is left beside the extension for CEP to register as a second panel.
+    assert.deepEqual(fs.readdirSync(home).filter(n => n !== '.audio-pro'), ['ext']);
+    assert.equal(fs.existsSync(path.join(home, '.audio-pro', 'update-prev')), false);
+  } finally {
+    process.env.HOME = previous;
+  }
+});
+
 test('the updater points at this repo', () => {
   // A copy-paste of the old panel's repo here would quietly install the wrong
   // extension over this one.

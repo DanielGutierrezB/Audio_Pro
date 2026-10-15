@@ -7,24 +7,18 @@
 // The token is both written to disk and broadcast. The file is what makes the
 // session survive a panel reload (and is shared with the Adobe Podcast Enhance
 // panel on purpose); the event is what makes the panel light up immediately
-// instead of on its next startup check.
+// instead of on its next startup check. The filename, the event name and the
+// way the token is read off Adobe's page all come from adobe-session.js, so the
+// two windows cannot drift apart.
 var cs = new CSInterface();
 var _require = (typeof require !== 'undefined') ? require : (window.cep_node ? window.cep_node.require : null);
-var TOKEN_EVENT = 'com.danielgutierrez.audiopro.tokenReady';
-var TOKEN_FILE = '.adobe-podcast-premiere-token';
+var adobeSession = _require(_require('path').join(cs.getSystemPath(SystemPath.EXTENSION), 'js', 'adobe-session.js'));
 
 function $(id) { return document.getElementById(id); }
 
-function saveTokenFile(tok) {
-  try {
-    var pathN = _require('path'), fsN = _require('fs'), osN = _require('os');
-    fsN.writeFileSync(pathN.join(osN.homedir(), TOKEN_FILE), tok, 'utf8');
-  } catch (e) {}
-}
-
 function broadcastToken(tok) {
   try {
-    var ev = new CSEvent(TOKEN_EVENT, 'APPLICATION');
+    var ev = new CSEvent(adobeSession.TOKEN_EVENT, 'APPLICATION');
     ev.data = tok;
     cs.dispatchEvent(ev);
   } catch (e) {}
@@ -35,18 +29,13 @@ function closeSelf() {
 }
 
 var poll = setInterval(function () {
-  try {
-    var w = $('adobeFrame').contentWindow;
-    var t = w && w.adobeIMS && w.adobeIMS.getAccessToken && w.adobeIMS.getAccessToken();
-    var tok = t && (t.token || t.tokenValue);
-    if (tok && tok.indexOf('eyJ') === 0) {
-      clearInterval(poll);
-      $('status').textContent = 'Conectado ✓';
-      saveTokenFile(tok);
-      broadcastToken(tok);
-      setTimeout(closeSelf, 600);
-    }
-  } catch (e) {}
+  var tok = adobeSession.readImsToken($('adobeFrame').contentWindow);
+  if (!tok) return;
+  clearInterval(poll);
+  $('status').textContent = 'Conectado ✓';
+  try { adobeSession.saveToken(tok); } catch (e) {}
+  broadcastToken(tok);
+  setTimeout(closeSelf, 600);
 }, 1500);
 
 $('cancelBtn').addEventListener('click', function () { clearInterval(poll); closeSelf(); });

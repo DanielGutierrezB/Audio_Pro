@@ -19,6 +19,16 @@ consistente sin que tengas que salir del programa:
 Si la masterización falla, el clip se queda en Mango: el audio de Adobe ya está
 en el timeline y nunca te quedás sin nada.
 
+Si algo falla a mitad de camino, la fila muestra el error y un botón
+**reintentar** que retoma exactamente desde la etapa que falló: nunca vuelve a
+exportar ni a pagarle a Adobe por una secuencia que ya volvió. Lo mismo pasa si
+cerrás el panel o Premiere se cae: al volver a abrirlo, **Procesar** retoma lo
+que quedó a medias, y **Secuencia activa** sobre una fila sin terminar la
+continúa en vez de empezarla de cero. La única excepción es un master que no se
+puede relinkear sin desincronizar o sin la voz de Adobe: ese no ofrece
+reintentar, porque repetirlo daría el mismo resultado; queda en Mango con el
+motivo a la vista.
+
 ## Instalación
 
 Descargá `AudioPro-Premiere-<versión>.pkg` de

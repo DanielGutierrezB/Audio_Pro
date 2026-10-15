@@ -49,27 +49,44 @@ function looksLikeToken(t) {
   return typeof t === 'string' && t.indexOf('eyJ') === 0;
 }
 
+// The token Adobe's own page holds once someone is signed in. Both the login
+// window and the silent reauth iframe poll a podcast.adobe.com window for it,
+// so the reading lives here once. Throws are swallowed: the frame is
+// cross-origin until the page settles, and "not yet" is the normal answer.
+function readImsToken(win) {
+  try {
+    const t = win && win.adobeIMS && win.adobeIMS.getAccessToken && win.adobeIMS.getAccessToken();
+    const tok = t && (t.token || t.tokenValue);
+    return looksLikeToken(tok) ? tok : null;
+  } catch {
+    return null;
+  }
+}
+
+function loadToken() {
+  try {
+    const saved = fs.readFileSync(tokenFile(), 'utf8').trim();
+    return looksLikeToken(saved) ? saved : null;
+  } catch { return null; }
+}
+
+function saveToken(t) {
+  fs.writeFileSync(tokenFile(), t, 'utf8');
+}
+
 function createSession({ cs, log, onState = () => {} } = {}) {
-  let token = null;
+  const say = (msg) => { if (log) log(msg); };
+
+  // Read synchronously, at creation: the panel can be clicked long before the
+  // network check in verify() finishes, and that click must already know there
+  // is a saved token (and whether the credits limit is still running).
+  let token = loadToken();
   let limitUntil = 0;
   let limitReportedAt = 0;
 
-  const say = (msg) => { if (log) log(msg); };
-
-  function loadToken() {
-    try {
-      const saved = fs.readFileSync(tokenFile(), 'utf8').trim();
-      return looksLikeToken(saved) ? saved : null;
-    } catch { return null; }
-  }
-
-  function saveToken(t) {
-    try { fs.writeFileSync(tokenFile(), t, 'utf8'); } catch (err) { say('no pude guardar el token: ' + err.message); }
-  }
-
   function setToken(t, how) {
     token = t;
-    saveToken(t);
+    try { saveToken(t); } catch (err) { say('no pude guardar el token: ' + err.message); }
     onState({ connected: true, how, email: phonos.tokenInfo(t).email });
   }
 
@@ -139,12 +156,8 @@ function createSession({ cs, log, onState = () => {} } = {}) {
         resolve(tok || null);
       };
       const poll = setInterval(() => {
-        try {
-          const w = frame.contentWindow;
-          const t = w && w.adobeIMS && w.adobeIMS.getAccessToken && w.adobeIMS.getAccessToken();
-          const tok = t && (t.token || t.tokenValue);
-          if (looksLikeToken(tok)) finish(tok);
-        } catch { /* cross-origin until the page settles */ }
+        const tok = readImsToken(frame.contentWindow);
+        if (tok) finish(tok);
       }, 1000);
       const timer = setTimeout(() => finish(null), timeoutMs);
     });
@@ -201,13 +214,10 @@ function createSession({ cs, log, onState = () => {} } = {}) {
   // a silent refresh if needed. Anything still broken waits for the user to
   // press Conectar.
   async function verify() {
-    token = loadToken();
-    loadLimit();
     if (!token) {
       onState({ connected: false, how: null, email: null });
       return { connected: false, reason: 'NO_TOKEN' };
     }
-    onState({ connected: true, how: 'guardado', email: phonos.tokenInfo(token).email });
 
     async function refreshOrGiveUp(why, failureReason) {
       say(why + ' → reauth silenciosa…');
@@ -247,6 +257,9 @@ function createSession({ cs, log, onState = () => {} } = {}) {
     return { ok: true, verified: ok === true };
   }
 
+  loadLimit();
+  if (token) onState({ connected: true, how: 'guardado', email: phonos.tokenInfo(token).email });
+
   return {
     getToken: () => token,
     hasToken: () => !!token,
@@ -270,6 +283,8 @@ function createSession({ cs, log, onState = () => {} } = {}) {
 module.exports = {
   createSession,
   looksLikeToken,
+  readImsToken,
+  saveToken,
   tokenFile,
   limitFile,
   TOKEN_EVENT,

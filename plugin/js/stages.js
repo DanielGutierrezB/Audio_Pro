@@ -123,6 +123,9 @@ async function relinkMaster({ host, aligner, nodeId, originalPath, masterPath, m
   }
 
   const res = await host.relinkMaster(nodeId, masterPath, label);
+  if (res.error === 'NODE_NOT_FOUND') {
+    return { ok: false, lost: true, error: 'el clip ya no está en el proyecto — reintentá para volver a colocarlo' };
+  }
   if (!res.ok) return { ok: false, error: 'relink: ' + res.error, debug: res.debug };
 
   if (rename) {

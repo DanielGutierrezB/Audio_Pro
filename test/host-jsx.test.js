@@ -46,7 +46,6 @@ test('every entry point the panel calls exists', () => {
     'ppExportAudio',
     'ppPlaceEnhanced',
     'ppRelinkMaster',
-    'ppSetLabel',
     'ppRenameItem',
   ]) {
     assert.match(source, new RegExp('function\\s+' + fn + '\\s*\\('), `missing ${fn}`);
@@ -59,7 +58,7 @@ test('the relink path never activates a sequence', () => {
   // _activate must stay out of the three functions that run after placement.
   const after = source.slice(source.indexOf('function ppRelinkMaster'));
   assert.doesNotMatch(after, /_activate\(/,
-    'ppRelinkMaster/ppSetLabel/ppRenameItem must not steal the editor\'s focus');
+    'ppRelinkMaster/ppRenameItem must not steal the editor\'s focus');
 });
 
 test('ppPlaceEnhanced returns a nodeId, which is what the relink is addressed by', () => {
@@ -83,6 +82,37 @@ test('"0" from evalScript does not mean "mute the other tracks"', () => {
   );
   assert.match(body, /String\(muteOthers\) === '1'/);
   assert.doesNotMatch(body, /if \(muteOthers\)/);
+});
+
+test('the export fallback only accepts this run\'s file, not an earlier run with the same prefix', () => {
+  // "clase" must not match "clase_2.wav" or "clase_inout.wav" left by another
+  // run: that would send stale audio to Adobe and report success.
+  const body = source.slice(source.indexOf('function _findExported'), source.indexOf('function _seqInSeconds'));
+  assert.match(body, /var prefix = stem \+ '\.';/);
+  assert.match(body, /indexOf\(prefix\) === 0/);
+});
+
+test('the fallback JSON writer produces JSON the panel can parse', () => {
+  // Hosts without native JSON fall back to _stringify, and the panel parses
+  // whatever comes back. Run the real function (it is plain ES3) on the values
+  // that broke the old one: Windows paths, multi-line errors, odd numbers.
+  const start = source.indexOf('function _stringify(o) {');
+  const fnSource = source.slice(start);
+  const _stringify = new Function(fnSource + '; return _stringify;')();
+  const value = {
+    ok: false,
+    error: 'línea 1\nlínea "2"\ttab',
+    path: 'C:\\Users\\editor\\Audio_Process\\clase.wav',
+    debug: ['a', 1, true, null],
+    nan: NaN,
+    skipped: undefined,
+  };
+  const parsed = JSON.parse(_stringify(value));
+  assert.equal(parsed.error, value.error);
+  assert.equal(parsed.path, value.path);
+  assert.deepEqual(parsed.debug, value.debug);
+  assert.equal(parsed.nan, null);
+  assert.ok(!('skipped' in parsed));
 });
 
 test('the colour labels are the ones the queue and the installer talk about', () => {
