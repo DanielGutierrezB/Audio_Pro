@@ -43,6 +43,32 @@ Premiere ignora el panel en silencio. El `.pkg` lo activa por vos.
 la v0.2.0: lo único que falta es el build de ffmpeg 8 con su hash pineado
 (`plugin/js/ffmpeg-setup.js` ya tiene la tabla por plataforma).
 
+### Probar que quedó bien
+
+Ocho cosas, en orden de qué tan fácil es que fallen sin que se note:
+
+1. **Sincronía.** Agarrá una secuencia que empiece con unos segundos de silencio
+   y procesala. Cuando aparezca el clip Mango, miralo contra el audio original:
+   la onda tiene que coincidir. Volvé a mirar cuando pase a Verde. Este es el
+   chequeo número uno porque un master adelantado tres segundos suena bien
+   aislado y solo se nota contra la imagen.
+2. **El clip pasa de Mango a Verde** solo, sin que el panel te cambie de
+   secuencia ni te robe el foco mientras tanto.
+3. **Quedaron los tres archivos**: `Audio_Process/<secuencia>.wav`,
+   `Enhanced/<secuencia>.wav` y `Audio_Pro/<secuencia>.wav`.
+4. **El JSON del master dice `"mode": 2`.** Si dice 1, el par con Adobe fue
+   rechazado y ese master no lleva la voz limpia — el panel no relinkea en ese
+   caso, justamente para que no pase inadvertido.
+5. **El motor es el correcto.** El log del panel (⚙ → Avanzado) y el campo
+   `engine.ffmpeg` del JSON tienen que decir **8.1**. Un 6.x ahí significa que
+   agarró otro binario y el de-esser no está haciendo nada.
+6. **Se puede editar mientras masteriza.** Es el punto de todo esto: cortá,
+   movés clips, reproducí. El ffmpeg corre afuera de Premiere.
+7. **Reprocesar no pisa nada.** Procesá la misma secuencia dos veces: la
+   segunda escribe `_2` y el clip de la primera sigue sonando igual.
+8. **La cola se retoma.** Cerrá y abrí el panel a mitad de un master: la fila
+   vuelve a arrancar desde el masterizado, sin volver a gastar créditos.
+
 ### Actualizaciones
 
 El panel se actualiza solo: la pill ⟳ del header compara contra el último
