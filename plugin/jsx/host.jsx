@@ -262,6 +262,10 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label) {
     if (!seq) return _json({ ok: false, error: 'Secuencia no encontrada' });
     var startAt = (startSeconds == null || startSeconds === '') ? '0' : String(startSeconds);
     var colorLabel = _labelOr(label, LABEL_IN_PROGRESS);
+    // Todo llega por evalScript como string, y "0" es truthy: evaluar
+    // `muteOthers` tal cual mutearía las demás pistas en un In→Out y dejaría
+    // mudo todo el timeline fuera de la región.
+    var mute = String(muteOthers) === '1' || muteOthers === true;
 
     var bin = _getOrCreateBin(BIN_NAME);
     var mediaFile = new File(wavPath);
@@ -315,7 +319,7 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label) {
 
     try { item.setColorLabel(colorLabel); } catch (eCol) {}
 
-    if (muteOthers) {
+    if (mute) {
       for (var m = 0; m < aT.numTracks; m++) { try { aT[m].setMute(m === idx ? 0 : 1); } catch (e4) {} }
     }
 
@@ -351,10 +355,10 @@ function ppRelinkMaster(nodeId, masterPath, label) {
     try { before = String(item.getMediaPath()); } catch (ePath) {}
     dbg.push('antes=' + before);
 
-    // El segundo argumento (overrideChecks) es necesario: el master tiene otra
-    // duración que el clip de Adobe (loudnorm no la cambia, pero el fundido de
-    // seguridad y el redondeo de muestras sí pueden mover unos milisegundos) y
-    // sin esto Premiere rechaza el relink por "media mismatch".
+    // overrideChecks (segundo argumento) en true: el panel ya verificó que el
+    // master dure lo mismo que el original, pero las dos pasadas de ffmpeg
+    // pueden mover una o dos muestras, y sin esto Premiere rechaza el relink
+    // por "media mismatch" ante diferencias que no se ven ni se oyen.
     try { item.changeMediaPath(mediaFile.fsName, true); }
     catch (eCmp) {
       try { item.changeMediaPath(mediaFile.fsName); }   // API vieja: un solo argumento

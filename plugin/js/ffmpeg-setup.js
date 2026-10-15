@@ -25,7 +25,7 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { execFile, execFileSync } = require('child_process');
+const { execFile } = require('child_process');
 const crypto = require('crypto');
 const zlib = require('zlib');
 
@@ -60,12 +60,7 @@ const BUILDS = {
 };
 
 function platformKey() {
-  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch;
-  return `${process.platform}-${arch}`;
-}
-
-function userBinDir() {
-  return binPaths.USER_SUPPORT_DIR;
+  return `${process.platform}-${process.arch}`;
 }
 
 // What the panel logs on startup. The point is that the log answers "which
@@ -79,18 +74,9 @@ function describe() {
     ok: check.ok,
     dir,
     major: check.major ?? null,
-    version: version(path.join(dir, 'ffmpeg' + (process.platform === 'win32' ? '.exe' : ''))),
+    version: binPaths.versionLine(dir),
     reason: check.ok ? null : check.reason,
   };
-}
-
-function version(ffmpegPath) {
-  try {
-    const out = execFileSync(ffmpegPath, ['-version'], { encoding: 'utf8', timeout: 10000 });
-    return out.split('\n')[0].trim();
-  } catch {
-    return null;
-  }
 }
 
 function sha256(buf) {
@@ -158,7 +144,7 @@ async function install(onStatus = () => {}) {
     );
   }
 
-  const dest = userBinDir();
+  const dest = binPaths.userSupportDir();
   fs.mkdirSync(dest, { recursive: true });
 
   for (const [name, spec] of Object.entries(build.files)) {
@@ -215,9 +201,7 @@ module.exports = {
   ensure,
   install,
   describe,
-  version,
   platformKey,
-  userBinDir,
   BUILDS,
   // exported for tests
   findEntry,

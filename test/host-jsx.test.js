@@ -73,6 +73,18 @@ test('ppPlaceEnhanced returns a nodeId, which is what the relink is addressed by
   assert.match(body, /item\.nodeId/);
 });
 
+test('"0" from evalScript does not mean "mute the other tracks"', () => {
+  // Every argument crosses evalScript as a string, and "0" is truthy. Testing
+  // the raw argument muted every other track on an In→Out run — the one case
+  // the panel deliberately passes 0 — silencing the timeline outside the region.
+  const body = source.slice(
+    source.indexOf('function ppPlaceEnhanced'),
+    source.indexOf('function ppRelinkMaster'),
+  );
+  assert.match(body, /String\(muteOthers\) === '1'/);
+  assert.doesNotMatch(body, /if \(muteOthers\)/);
+});
+
 test('the colour labels are the ones the queue and the installer talk about', () => {
   assert.match(source, /var LABEL_IN_PROGRESS = 7;/, 'Mango');
   assert.match(source, /var LABEL_DONE = 13;/, 'Verde');

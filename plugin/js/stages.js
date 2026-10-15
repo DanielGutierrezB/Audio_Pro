@@ -1,17 +1,17 @@
 'use strict';
 
-// ── The six stages, one function each ───────────────────────────────────
-// Every stage takes its collaborators as arguments instead of requiring them,
-// which is what lets test/queue.test.js drive the whole machine with stubs:
-// Premiere, Adobe and ffmpeg are all unavailable in a test runner, and the
-// thing worth testing is the order, the error handling and what happens to the
-// clip's colour — not any of those three.
+// ── The Premiere-facing stages and the on-disk layout ───────────────────
+// The three stages that talk to Premiere (export, place, relink) carry policy
+// of their own — which errors mean what, when not to mute, when a finished
+// master must NOT replace the clip — so they live here instead of inline in
+// the queue. The other three stages are a single call each (phonos,
+// align-to-original, mastering) and the queue makes them directly.
 //
-// Each stage returns a plain result object rather than throwing, except for
-// genuinely unexpected failures. The caller (queue.js) decides what a failure
-// means, because that differs per stage: a failed export means nothing
-// happened, while a failed master means the editor already has usable audio on
-// the timeline and the clip should stay Mango.
+// Every function takes its collaborators as arguments, which is what lets
+// test/queue.test.js drive the whole machine with Premiere stubbed out.
+//
+// Each returns { ok, error } rather than throwing; `error` is already the
+// sentence the row shows.
 
 const path = require('path');
 const fs = require('fs');
@@ -80,27 +80,6 @@ async function exportSequence({ host, id, outPath, presetPath, workArea }) {
   return { ok: true, outPath: res.outPath || outPath, inPoint: res.inPoint ?? 0, debug: res.debug };
 }
 
-// ── 2. Adobe Podcast, always at 100% ──
-// The dry/wet blend belongs to the core (a 200 Hz band split, not a flat mix),
-// so asking Adobe for anything but the pure clean voice would mean blending
-// the same two signals twice in two different ways.
-async function enhanceWithAdobe({ phonos, token, inPath, outPath, onProgress = () => {} }) {
-  await phonos.enhanceToFile(inPath, outPath, {
-    token,
-    cleanVoice: 100,
-    ffmpeg: null,
-    codec: 'pcm_s24le',
-    onStatus: (state, pct) => onProgress(state, pct),
-  });
-  return { ok: true, outPath };
-}
-
-// ── 3. Align Adobe's return to the original's clock ──
-async function alignEnhanced({ aligner, originalPath, enhancedRawPath, outPath, onStatus, setCurrent }) {
-  const res = await aligner.alignToOriginal(originalPath, enhancedRawPath, outPath, { onStatus, setCurrent });
-  return { ok: true, outPath: res.outPath, note: res.note, shiftSec: res.shiftSec, correlation: res.correlation };
-}
-
 // ── 4. Place the clean voice on a new track ──
 // In an In→Out run the other tracks are never muted: setMute silences a whole
 // track, which would kill the rest of the timeline outside the region.
@@ -117,14 +96,6 @@ async function placeEnhanced({ host, id, wavPath, muteOthers, startSeconds, labe
   return { ok: true, nodeId: res.nodeId, track: res.track, debug: res.debug };
 }
 
-// ── 5. Master ──
-async function masterSequence({ mastering, originalPath, enhancedPath, settings, sequenceName, onProgress, onNote, isCancelled, setCurrent }) {
-  return mastering.masterOne({
-    originalPath, enhancedPath, settings, sequenceName,
-    onProgress, onNote, isCancelled, setCurrent,
-  });
-}
-
 // ── 6. Relink ──
 // Two gates before the clip is allowed to change:
 //
@@ -139,16 +110,20 @@ async function masterSequence({ mastering, originalPath, enhancedPath, settings,
 // worth saying on the row, not worth withholding a finished master.
 async function relinkMaster({ host, aligner, nodeId, originalPath, masterPath, mode, label, rename }) {
   if (mode === 1) {
-    return { ok: false, blocked: 'PAIR_MISMATCH', error: 'el par con Adobe fue rechazado — no relinkeo' };
+    return {
+      ok: false,
+      blocked: 'PAIR_MISMATCH',
+      error: 'el par con Adobe fue rechazado: el master no lleva la voz limpia, lo dejo sin relinkear',
+    };
   }
 
   const sync = await aligner.masterMatchesOriginal(originalPath, masterPath);
   if (!sync.ok) {
-    return { ok: false, blocked: 'SYNC', error: sync.reason, drift: sync.drift };
+    return { ok: false, blocked: 'SYNC', error: `sincronía: ${sync.reason} — no relinkeo`, drift: sync.drift };
   }
 
   const res = await host.relinkMaster(nodeId, masterPath, label);
-  if (!res.ok) return { ok: false, error: res.error, raw: res.error, debug: res.debug };
+  if (!res.ok) return { ok: false, error: 'relink: ' + res.error, debug: res.debug };
 
   if (rename) {
     // Cosmetic: makes the bin readable at a glance. Never a failure.
@@ -159,10 +134,7 @@ async function relinkMaster({ host, aligner, nodeId, originalPath, masterPath, m
 
 module.exports = {
   exportSequence,
-  enhanceWithAdobe,
-  alignEnhanced,
   placeEnhanced,
-  masterSequence,
   relinkMaster,
   dirsFor,
   pathsFor,

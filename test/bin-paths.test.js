@@ -79,7 +79,7 @@ test('a directory with ffmpeg but no ffprobe is rejected', () => {
 test('the search order puts the override first and the extension before the shared dir', () => {
   const dirs = binPaths.candidateDirs();
   assert.ok(dirs.includes(binPaths.SYSTEM_SUPPORT_DIR), 'the pkg location must be searched');
-  assert.ok(dirs.includes(binPaths.USER_SUPPORT_DIR), 'the download fallback must be searched');
+  assert.ok(dirs.includes(binPaths.userSupportDir()), 'the download fallback must be searched');
   assert.ok(
     dirs.indexOf(binPaths.extensionBinDir()) < dirs.indexOf(binPaths.SYSTEM_SUPPORT_DIR),
     'a dev checkout wins over whatever the installer left on the machine',

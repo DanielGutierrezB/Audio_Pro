@@ -57,7 +57,7 @@ test('a hash mismatch refuses to install', async () => {
     );
     // And nothing was written: a half-installed binary is worse than none,
     // because bin-paths would find it and the chain would fail later.
-    const dir = ffmpegSetup.userBinDir();
+    const dir = binPaths.userSupportDir();
     if (fs.existsSync(dir)) {
       assert.deepEqual(fs.readdirSync(dir), [], 'nothing should have landed');
     }

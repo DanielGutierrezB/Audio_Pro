@@ -34,7 +34,6 @@ const { execFileSync } = require('child_process');
 const EXE = process.platform === 'win32' ? '.exe' : '';
 
 const SYSTEM_SUPPORT_DIR = '/Library/Application Support/AudioPro/bin';
-const USER_SUPPORT_DIR = path.join(os.homedir(), '.audio-pro', 'bin');
 const AUDIOPRO_APP_DIR = '/Applications/AudioPro.app/Contents/Resources/bin';
 
 // Minimum major version. 7 is where the de-esser's options became reliable;
@@ -61,10 +60,17 @@ function extensionBinDir() {
   return path.join(__dirname, '..', 'bin');
 }
 
+// Resolved per call, not at load: HOME is what defines it, and a value frozen
+// at require time would ignore a HOME changed afterwards (tests do exactly
+// that, and so does anything that runs the panel's modules for another user).
+function userSupportDir() {
+  return path.join(os.homedir(), '.audio-pro', 'bin');
+}
+
 function candidateDirs() {
   const dirs = [];
   if (process.env.AUDIO_PRO_BIN_DIR) dirs.push(process.env.AUDIO_PRO_BIN_DIR);
-  dirs.push(extensionBinDir(), SYSTEM_SUPPORT_DIR, USER_SUPPORT_DIR);
+  dirs.push(extensionBinDir(), SYSTEM_SUPPORT_DIR, userSupportDir());
   return dirs;
 }
 
@@ -81,14 +87,21 @@ function hasBoth(dir) {
 // ffmpeg call, and the pipeline makes several per file.
 let verifiedForeignDir;
 
-function majorVersionOf(ffmpegPath) {
+// The first line of `ffmpeg -version` ("ffmpeg version 8.1 Copyright ..."),
+// or null. It is what the panel logs and what each master's sidecar records,
+// so "which ffmpeg made this file?" has an answer after the fact.
+function versionLine(dir) {
   try {
-    const out = execFileSync(ffmpegPath, ['-version'], { encoding: 'utf8', timeout: 10000 });
-    const m = out.match(/^ffmpeg version n?(\d+)/);
-    return m ? parseInt(m[1], 10) : null;
+    const out = execFileSync(path.join(dir, 'ffmpeg' + EXE), ['-version'], { encoding: 'utf8', timeout: 10000 });
+    return out.split('\n')[0].trim();
   } catch {
     return null;
   }
+}
+
+function majorVersionOf(dir) {
+  const m = (versionLine(dir) || '').match(/^ffmpeg version n?(\d+)/);
+  return m ? parseInt(m[1], 10) : null;
 }
 
 function missingFilters(ffmpegPath) {
@@ -114,13 +127,12 @@ function missingFilters(ffmpegPath) {
 // and because a wrong answer here is a silently broken de-esser.
 function verify(dir) {
   if (!hasBoth(dir)) return { ok: false, reason: 'ffmpeg or ffprobe missing' };
-  const ffmpegPath = path.join(dir, 'ffmpeg' + EXE);
-  const major = majorVersionOf(ffmpegPath);
+  const major = majorVersionOf(dir);
   if (major == null) return { ok: false, reason: 'could not read its version' };
   if (major < MIN_FFMPEG_MAJOR) {
     return { ok: false, major, reason: `ffmpeg ${major}.x is too old (need ${MIN_FFMPEG_MAJOR}+)` };
   }
-  const missing = missingFilters(ffmpegPath);
+  const missing = missingFilters(path.join(dir, 'ffmpeg' + EXE));
   if (missing.length) {
     return { ok: false, major, reason: `missing filters: ${missing.join(', ')}` };
   }
@@ -166,10 +178,11 @@ module.exports = {
   rnnoiseModel,
   getBinDir,
   verify,
+  versionLine,
   candidateDirs,
   extensionBinDir,
+  userSupportDir,
   SYSTEM_SUPPORT_DIR,
-  USER_SUPPORT_DIR,
   AUDIOPRO_APP_DIR,
   MIN_FFMPEG_MAJOR,
   REQUIRED_FILTERS,

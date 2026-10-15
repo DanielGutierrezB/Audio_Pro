@@ -211,10 +211,12 @@ function renderQueue(items) {
     st.textContent = item.error || item.status;
     top.appendChild(st);
 
-    if (item.canRetryMaster) {
+    // Retrying resumes at the stage that failed, so it never re-exports and
+    // never pays Adobe for a sequence that already came back.
+    if (item.error) {
       var retry = document.createElement('button');
       retry.className = 'retry';
-      retry.textContent = 'reintentar master';
+      retry.textContent = 'reintentar';
       retry.setAttribute('data-retry', item.id);
       top.appendChild(retry);
     }
@@ -246,14 +248,30 @@ function tag(text) {
   return el;
 }
 
+// Once the clip is on the timeline the row carries the Mango edge too, so the
+// list and the project panel agree about what is still in progress.
 function rowClass(item) {
   var S = queueMod.STAGE;
   if (item.stage === S.DONE) return 'done';
-  if (item.stage === S.ERROR) return item.nodeId ? 'err mango' : 'err';
-  if (item.stage === S.PENDING) return item.nodeId ? 'mango' : '';
-  // Everything in between is in flight. Once the clip is on the timeline the
-  // row carries the Mango edge too, so the list and the project panel agree.
-  return item.nodeId ? 'work mango' : 'work';
+  var mango = item.nodeId ? ' mango' : '';
+  if (item.error) return 'err' + mango;
+  if (item.stage === S.PENDING) return mango.trim();
+  return 'work' + mango;
+}
+
+// ffmpeg reports progress several times a second; rebuilding the list on each
+// tick is wasted work, so redraws are coalesced to one per frame.
+var renderPending = null;
+function scheduleRender(items) {
+  var first = renderPending === null;
+  renderPending = items;
+  if (first) {
+    requestAnimationFrame(function () {
+      var latest = renderPending;
+      renderPending = null;
+      renderQueue(latest);
+    });
+  }
 }
 
 // ── credits limit banner ──
@@ -328,9 +346,11 @@ async function runPending() {
   await runQueue(queue.pending());
 }
 
-function setBusy(busy) {
+var busy = false;
+function setBusy(on) {
+  busy = on;
   ['activeBtn', 'inoutBtn', 'loadBtn', 'runBtn'].forEach(function (id) {
-    $(id).disabled = busy;
+    $(id).disabled = on;
   });
 }
 
@@ -488,13 +508,10 @@ function wire() {
   // Retry lives on the row, so it is delegated rather than bound per render.
   $('queueList').addEventListener('click', function (ev) {
     var id = ev.target.getAttribute && ev.target.getAttribute('data-retry');
-    if (!id) return;
-    setBusy(true);
-    queue.retryMaster(id, { presetPath: WAV_PRESET })
-      .then(function (res) {
-        notify(res.ok ? 'Master listo.' : 'El master volvió a fallar — mirá el log.', res.ok ? 'success' : 'warn');
-      })
-      .finally(function () { setBusy(false); });
+    if (!id || busy) return;
+    ensureReady().then(function (ready) {
+      if (ready) runQueue([queue.get(id)]);
+    });
   });
 
   ['platformPreset', 'fusionMode', 'muteOthers', 'labelInProgress', 'labelDone'].forEach(function (id) {
@@ -550,7 +567,7 @@ function wire() {
     session: session,
     getSettings: function () { return settings; },
     pipelineSettings: settingsMod.pipelineSettings,
-    onChange: renderQueue,
+    onChange: scheduleRender,
     log: log,
     notify: notify,
   });

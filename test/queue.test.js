@@ -34,6 +34,9 @@ function harness(overrides = {}) {
     exportAudio: async (id, outPath) => {
       calls.push({ name: 'export', id, outPath });
       if (overrides.exportFails) return { ok: false, error: 'NO_PRESET' };
+      // A real export takes seconds and the file appears at the end; landing it
+      // after a tick is what lets the same-name race show up in a test.
+      await new Promise(resolve => setImmediate(resolve));
       touch(outPath);
       return { ok: true, outPath, inPoint: overrides.inPoint ?? 0 };
     },
@@ -200,25 +203,49 @@ test('an In→Out run normalises raiseOnly and never mutes the other tracks', as
   assert.match(item.paths.original, /clase_inout\.wav$/);
 });
 
-test('a failed master leaves the clip placed and offers a retry that costs no credits', async () => {
+test('a failed master leaves the clip placed, and retrying re-runs only the master', async () => {
   const dir = tmpProject();
-  const h = harness({ projectDir: dir, masterFails: true });
+  const overrides = { projectDir: dir, masterFails: true };
+  const h = harness(overrides);
   await h.queue.attach(dir);
   const item = h.queue.upsert({ id: '1', name: 'clase' });
 
   await h.queue.process([item], { presetPath: '/preset.epr' });
 
-  assert.equal(item.stage, STAGE.ERROR);
+  // The stage is still "master next" and the row carries the error: that is
+  // the whole retry contract.
+  assert.equal(item.stage, STAGE.MASTERING);
+  assert.match(item.error, /ffmpeg explotó/);
   assert.equal(item.nodeId, 'node-1', 'the clip is still on the timeline');
-  assert.ok(item.canRetryMaster, 'the row offers a retry');
   assert.ok(!h.names().includes('relink'), 'nothing was relinked');
 
-  // Retrying re-runs only the master: no export, no Adobe, no second clip.
+  // Retrying is just processing the row again: no export, no Adobe, no second clip.
+  overrides.masterFails = false;
   h.calls.length = 0;
-  h.queue.get('1').error = null;
-  const retry = await h.queue.retryMaster('1', { presetPath: '/preset.epr' });
-  assert.equal(retry.failed, 1);
-  assert.deepEqual(h.names(), ['master'], 'only the master stage re-ran');
+  const retry = await h.queue.process([item], { presetPath: '/preset.epr' });
+  assert.equal(retry.ok, 1);
+  assert.deepEqual(h.names(), ['master', 'relink', 'rename']);
+  assert.equal(item.error, null);
+  assert.equal(item.stage, STAGE.DONE);
+});
+
+test('a failure after Adobe never pays Adobe twice', async () => {
+  const dir = tmpProject();
+  const overrides = { projectDir: dir, placeFails: true };
+  const h = harness(overrides);
+  await h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+
+  await h.queue.process([item], { presetPath: '/preset.epr' });
+  assert.equal(item.stage, STAGE.PLACING);
+  assert.ok(item.error);
+
+  overrides.placeFails = false;
+  h.calls.length = 0;
+  await h.queue.process(h.queue.pending(), { presetPath: '/preset.epr' });
+  assert.deepEqual(h.names(), ['place', 'master', 'relink', 'rename'],
+    'the retry starts at the stage that failed, with the Adobe return already on disk');
+  assert.match(item.paths.original, /clase\.wav$/, 'and it did not become clase_2');
 });
 
 test('mode 1 means the Adobe pass was dropped, so the clip is not relinked', async () => {
@@ -230,7 +257,7 @@ test('mode 1 means the Adobe pass was dropped, so the clip is not relinked', asy
   await h.queue.process([item], { presetPath: '/preset.epr' });
 
   assert.ok(!h.names().includes('relink'));
-  assert.equal(item.stage, STAGE.ERROR);
+  assert.ok(item.error);
   assert.equal(item.note, 'PAIR_MISMATCH');
   assert.ok(h.notes.some(n => /par con Adobe/.test(n.msg)));
 });
@@ -245,6 +272,7 @@ test('a master whose length drifted from the original is never relinked', async 
 
   assert.ok(!h.names().includes('relink'), 'relinking would desync the sequence');
   assert.equal(item.note, 'SYNC');
+  assert.match(item.error, /sincronía/);
 });
 
 test('a verify warning still relinks — it is a note, not a veto', async () => {
@@ -269,8 +297,13 @@ test('a pair that could not be aligned is placed but not mastered unattended', a
   const res = await h.queue.process([item], { presetPath: '/preset.epr' });
 
   assert.deepEqual(h.names(), ['export', 'adobe', 'align', 'place']);
-  assert.equal(item.stage, STAGE.PLACED, 'still resumable: the editor can master it after looking');
+  assert.equal(item.stage, STAGE.MASTERING, 'master is next, once the editor has looked');
   assert.equal(res.ok, 1);
+
+  // Processing it again is how the editor says "it's fine, master it".
+  h.calls.length = 0;
+  await h.queue.process([item], { presetPath: '/preset.epr' });
+  assert.deepEqual(h.names(), ['master', 'relink', 'rename']);
 });
 
 test('an export failure stops before a single credit is spent', async () => {
@@ -282,25 +315,77 @@ test('an export failure stops before a single credit is spent', async () => {
   await h.queue.process([item], { presetPath: '/preset.epr' });
 
   assert.deepEqual(h.names(), ['export']);
-  assert.equal(item.stage, STAGE.ERROR);
   assert.match(item.error, /preset/);
 });
 
-test('a credits limit arms the shared gate and leaves the row pending, not failed', async () => {
+test('a credits limit keeps the row at the Adobe stage, and resuming does not re-export', async () => {
   const dir = tmpProject();
-  const h = harness({
+  const overrides = {
     projectDir: dir,
     adobeError: () => Object.assign(new Error('sin créditos'), { code: 'LIMIT', retrySeconds: 90 }),
-  });
+  };
+  const h = harness(overrides);
   await h.queue.attach(dir);
   const item = h.queue.upsert({ id: '1', name: 'clase' });
 
   await h.queue.process([item], { presetPath: '/preset.epr' });
 
   assert.ok(h.calls.some(c => c.name === 'armLimit' && c.secs === 90));
-  // Pending rather than error: nothing is wrong with this sequence, Adobe is
-  // just unavailable for an hour, and it should resume without being re-added.
-  assert.equal(item.stage, STAGE.PENDING);
+  assert.equal(item.stage, STAGE.ENHANCING);
+  assert.match(item.error, /créditos/);
+
+  // An hour later: the export is already on disk, so only Adobe onwards runs.
+  h.limit.limited = false;
+  overrides.adobeError = null;
+  h.calls.length = 0;
+  await h.queue.process(h.queue.pending(), { presetPath: '/preset.epr' });
+  assert.equal(h.names()[0], 'adobe');
+  assert.ok(!h.names().includes('export'));
+});
+
+test('sequences queued behind a credits limit do not each go and ask Adobe', async () => {
+  const dir = tmpProject();
+  const h = harness({
+    projectDir: dir,
+    adobeError: () => Object.assign(new Error('sin créditos'), { code: 'LIMIT', retrySeconds: 60 }),
+  });
+  await h.queue.attach(dir);
+  const items = ['1', '2', '3'].map(id => h.queue.upsert({ id, name: 'clase ' + id }));
+
+  await h.queue.process(items, { presetPath: '/preset.epr' });
+
+  // Two slots in the Adobe lane: at most the two in flight when the limit hit
+  // talk to Adobe; the third sees the gate and never makes the request.
+  assert.ok(h.calls.filter(c => c.name === 'adobe').length <= 2);
+  for (const item of items) assert.equal(item.stage, STAGE.ENHANCING);
+});
+
+test('two sequences with the same name never export over each other', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  await h.queue.attach(dir);
+  const a = h.queue.upsert({ id: '1', name: 'clase' });
+  const b = h.queue.upsert({ id: '2', name: 'clase' });
+
+  await h.queue.process([a, b], { presetPath: '/preset.epr' });
+
+  const exports = h.calls.filter(c => c.name === 'export').map(c => c.outPath);
+  assert.equal(new Set(exports).size, 2, `both exported to ${exports[0]}`);
+  assert.notEqual(a.paths.master, b.paths.master);
+});
+
+test('re-attaching to the open project keeps the live rows', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  await h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+
+  // Every button calls attach first. If that reloaded queue.json it would swap
+  // the rows a running render is updating for stale copies, and treat the pids
+  // of the ffmpeg it is running as orphans to kill.
+  const again = await h.queue.attach(dir);
+  assert.equal(h.queue.get('1'), item, 'the same object, not a reloaded copy');
+  assert.equal(again.length, 1);
 });
 
 test('a 401 is retried once behind a silent reauth', async () => {

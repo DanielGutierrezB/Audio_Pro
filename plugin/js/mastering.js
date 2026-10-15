@@ -18,12 +18,10 @@
 // the clip on the timeline.
 
 const fs = require('fs');
-const path = require('path');
 
 const pipeline = require('../core/pipeline');
 const binPaths = require('../core/bin-paths');
 const CORE_VERSION = require('../core/CORE_VERSION');
-const ffmpegSetup = require('./ffmpeg-setup');
 
 // Masters one file. `onProgress(step, pct)` drives the row; `onNote(text)`
 // goes to the log.
@@ -149,7 +147,7 @@ function writeSidecar(outputPath, data) {
     engine: {
       core: CORE_VERSION,
       ffmpegDir: binDir,
-      ffmpeg: binDir ? ffmpegSetup.version(path.join(binDir, 'ffmpeg')) : null,
+      ffmpeg: binDir ? binPaths.versionLine(binDir) : null,
     },
   };
   try {
