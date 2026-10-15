@@ -58,16 +58,27 @@ USER_HOME="$(dscl . -read "/Users/$CONSOLE_USER" NFSHomeDirectory 2>/dev/null | 
 EXT_PARENT="$USER_HOME/Library/Application Support/Adobe/CEP/extensions"
 EXT_DIR="$EXT_PARENT/$BUNDLE_ID"
 
-log "installing the panel for $CONSOLE_USER → $EXT_DIR"
 mkdir -p "$EXT_PARENT"
+
+# A symlink here is the dev install (scripts/dev-install.sh): the extension is
+# a git checkout's plugin/. rsync --delete through it would overwrite and
+# delete files in the repo, so it is left alone; the binaries and the
+# preference below still get installed.
+if [ -L "$EXT_DIR" ]; then
+  log "$EXT_DIR is a symlink (dev install) — leaving it pointing where it points"
+else
+  log "installing the panel for $CONSOLE_USER → $EXT_DIR"
+fi
 
 # --delete so a reinstall cannot leave a file from an older version behind;
 # the panel loads whatever is on disk, and a stale js/ file is a bug that
 # reproduces on exactly one machine.
 # bin/ is excluded because it does not come from the payload: the binaries
 # live in the shared support dir, and a dev checkout may have its own.
-rsync -a --delete --exclude 'bin/' "$TEMPLATE/" "$EXT_DIR/"
-chown -R "$CONSOLE_USER" "$EXT_DIR"
+if [ ! -L "$EXT_DIR" ]; then
+  rsync -a --delete --exclude 'bin/' "$TEMPLATE/" "$EXT_DIR/"
+  chown -R "$CONSOLE_USER" "$EXT_DIR"
+fi
 
 # CEP reads the preference for its own major version, and which one Premiere
 # uses depends on the Premiere release. Setting the three in range costs

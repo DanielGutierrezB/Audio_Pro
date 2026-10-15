@@ -143,6 +143,19 @@ function swapInto(stagedDir, extDir) {
   fs.rmSync(prev, { recursive: true, force: true });
 }
 
+// True when `extDir` is a git working tree rather than an installed copy —
+// i.e. the dev install (scripts/dev-install.sh), where the CEP extension is a
+// symlink to plugin/ in the repo. Installing a release there would replace
+// the checkout's plugin/ with the ZXP's contents and delete it as the "old"
+// tree, so the panel never self-updates in that case.
+function isDevCheckout(extDir) {
+  try {
+    return fs.existsSync(path.join(fs.realpathSync(extDir), '..', '.git'));
+  } catch {
+    return false;
+  }
+}
+
 // Downloads `assetUrl` and installs it in place of `extDir`. The ZXP is
 // unzipped into a sibling directory and checked there first — a full tree with
 // a readable manifest of the version we expected — so a failed or truncated
@@ -150,6 +163,9 @@ function swapInto(stagedDir, extDir) {
 // removed do not linger (the same reason pkg/scripts/postinstall uses
 // rsync --delete). Resolves to the installed version.
 async function install(assetUrl, extDir, onStatus = () => {}) {
+  if (isDevCheckout(extDir)) {
+    throw new Error('esta es la instalación de desarrollo (un checkout de git); actualizala con git pull');
+  }
   resetLog();
   appendLog('descargando ' + assetUrl);
   onStatus('Descargando actualización…');
@@ -202,6 +218,7 @@ module.exports = {
   isNewer,
   parseVersion,
   manifestVersion,
+  isDevCheckout,
   swapInto,
   unzipInto,
   appendLog,

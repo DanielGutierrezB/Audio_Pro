@@ -17,7 +17,9 @@
     "check:core": "bash scripts/check-core.sh",
     "check:version": "bash scripts/check-version.sh",
     "build:zxp": "bash scripts/build-zxp.sh",
-    "build:pkg": "bash scripts/build-pkg.sh"
+    "build:pkg": "bash scripts/build-pkg.sh",
+    "dev:install": "bash scripts/dev-install.sh",
+    "dev:remove": "bash scripts/dev-install.sh --remove"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

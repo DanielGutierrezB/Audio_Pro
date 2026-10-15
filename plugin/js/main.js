@@ -11,7 +11,7 @@ var cs = new CSInterface();
 var _require = (typeof require !== 'undefined') ? require : (window.cep_node ? window.cep_node.require : null);
 
 var pathN, fsN, osN;
-var EXT, WAV_PRESET, appVersion;
+var EXT, WAV_PRESET, appVersion, devMode;
 var phonos, queueMod, aligner, mastering, settingsMod, updater, ffmpegSetup, adobeSession;
 var session, queue;
 var settings = {};
@@ -59,6 +59,9 @@ try {
   // The manifest is the one place the version is written down; it is also
   // what the updater reads back after installing, so the two cannot disagree.
   appVersion = updater.manifestVersion(EXT);
+  // Running straight from the repo (scripts/dev-install.sh): never self-update
+  // over a git checkout, and ⟳ becomes "reload with my changes".
+  devMode = updater.isDevCheckout(EXT);
 
   log('Panel iniciado.');
 
@@ -451,6 +454,7 @@ function showEngine() {
 
 // ── updates ──
 async function checkUpdate() {
+  if (devMode) { log('Modo dev (' + EXT + '): no busco actualizaciones; ⟳ recarga el panel.'); return; }
   var res = await updater.check(appVersion);
   if (res.error) { log('checkUpdate: ' + res.error); return; }
   log('checkUpdate: local=' + appVersion + ' remoto=' + res.tag);
@@ -600,7 +604,8 @@ function wire() {
 
   wire();
   renderQueue([]);
-  $('versionLabel').textContent = 'v' + appVersion;
+  $('versionLabel').textContent = 'v' + appVersion + (devMode ? ' · dev' : '');
+  if (devMode) $('updateBtn').setAttribute('data-tip', 'Modo dev: recarga el panel con los cambios del repo (host.jsx incluido).');
 
   session.listenForToken(function () {
     notify('Conectado a Adobe.', 'success');

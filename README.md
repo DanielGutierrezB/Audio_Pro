@@ -167,18 +167,32 @@ npm run build:zxp     # dist/audio-pro-<v>.zxp
 npm run build:pkg     # dist/AudioPro-Premiere-<v>.pkg
 ```
 
-Para trabajar contra Premiere sin reinstalar en cada cambio, enlazá el
-directorio del plugin a donde CEP lo busca:
+### Instalación de desarrollo
+
+Para trabajar contra Premiere sin reconstruir ni reinstalar en cada cambio:
 
 ```bash
-ln -s "$PWD/plugin" ~/Library/Application\ Support/Adobe/CEP/extensions/com.danielgutierrez.audiopro
+npm run dev:install    # el panel de Premiere pasa a ser plugin/ de este repo
+npm run dev:remove     # vuelve a la copia instalada por el .pkg
 ```
 
-`plugin/.debug` habilita las DevTools de Chrome en `http://localhost:8099`
-(8100 para la ventana de login). Va en el repo pero no en el ZXP ni en el
-`.pkg`. El panel reinyecta `jsx/host.jsx` desde disco al
-arrancar, así que los cambios en ExtendScript solo necesitan recargar el panel,
-no reiniciar Premiere.
+`dev:install` reemplaza la extensión instalada por un symlink a `plugin/`
+(la copia instalada queda guardada en `~/.audio-pro/installed-backup`), activa
+`PlayerDebugMode` y se asegura de que `plugin/bin` tenga el ffmpeg pineado.
+Reiniciá Premiere una vez; la pill del panel dice **· dev**.
+
+| Cambiaste | Para verlo |
+|---|---|
+| JS, HTML, CSS o `jsx/host.jsx` | ⟳ en el panel (recarga y reinyecta `host.jsx`) |
+| `CSXS/manifest.xml` | reiniciar Premiere |
+| — | consola y DevTools en `http://localhost:8099` (login: `8100`) |
+
+En modo dev el panel no busca actualizaciones y nunca se autoactualiza
+encima del checkout (ese update reemplazaría y borraría `plugin/`); se
+actualiza con `git pull`. Por la misma razón, correr el `.pkg` en una máquina
+con la instalación dev deja el symlink como está e instala solo los binarios
+y la preferencia. `plugin/.debug` va en el repo pero no en el ZXP ni en el
+`.pkg`.
 
 ### El core es una copia, y eso se verifica
 

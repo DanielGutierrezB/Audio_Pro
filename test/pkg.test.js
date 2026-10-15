@@ -39,8 +39,8 @@ function stubPath(dir, fakeHome, calls) {
   return dir;
 }
 
-function runPostinstall({ withPayload = true } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-pkg-'));
+// `root` reuses a sandbox from a previous run, for the reinstall cases.
+function runPostinstall({ withPayload = true, root = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-pkg-')) } = {}) {
   const fakeHome = path.join(root, 'home');
   const support = path.join(root, 'support');
   const template = path.join(support, 'Premiere', 'extension');
@@ -134,6 +134,28 @@ test('a reinstall replaces the extension instead of layering over it', () => {
   const again = runPostinstall();
   assert.equal(again.status, 0, again.output);
   assert.equal(fs.existsSync(path.join(again.extDir, 'js', 'from-an-older-version.js')), false);
+});
+
+test('running the installer on a dev machine leaves the symlinked checkout alone', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-pkg-'));
+  const first = runPostinstall({ root });
+
+  // What scripts/dev-install.sh leaves behind: the extension is a symlink into
+  // a checkout that has work in it the release does not.
+  const repoPlugin = path.join(root, 'repo', 'plugin');
+  fs.mkdirSync(path.join(repoPlugin, 'js'), { recursive: true });
+  fs.writeFileSync(path.join(repoPlugin, 'js', 'work-in-progress.js'), 'not in the release');
+  fs.rmSync(first.extDir, { recursive: true, force: true });
+  fs.symlinkSync(repoPlugin, first.extDir);
+
+  const res = runPostinstall({ root });
+  assert.equal(res.status, 0, res.output);
+  assert.ok(fs.lstatSync(res.extDir).isSymbolicLink(), 'still the dev symlink');
+  // rsync --delete through the link would have wiped this.
+  assert.ok(fs.existsSync(path.join(repoPlugin, 'js', 'work-in-progress.js')));
+  assert.match(res.output, /dev install/);
+  // The rest of the install still happens.
+  assert.match(res.calls, /PlayerDebugMode 1/);
 });
 
 test('a missing payload aborts the install rather than reporting success', () => {

@@ -98,6 +98,26 @@ test('an update swaps the whole extension at once, and keeps a local bin/', () =
   }
 });
 
+test('a dev install (a symlink into a git checkout) is recognised and never self-updated', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'audiopro-dev-'));
+  const repo = path.join(root, 'repo');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  fs.mkdirSync(path.join(repo, 'plugin', 'js'), { recursive: true });
+  fs.writeFileSync(path.join(repo, 'plugin', 'js', 'main.js'), 'my uncommitted work');
+  const link = path.join(root, 'com.danielgutierrez.audiopro');
+  fs.symlinkSync(path.join(repo, 'plugin'), link);
+
+  assert.equal(updater.isDevCheckout(link), true);
+  // Installing a release here would swap the checkout's plugin/ out and delete
+  // it as the "old" tree. It must refuse before downloading anything.
+  await assert.rejects(() => updater.install('http://127.0.0.1:1/never.zxp', link), /desarrollo/);
+  assert.equal(fs.readFileSync(path.join(repo, 'plugin', 'js', 'main.js'), 'utf8'), 'my uncommitted work');
+
+  const installed = path.join(root, 'installed');
+  fs.mkdirSync(installed);
+  assert.equal(updater.isDevCheckout(installed), false, 'an installed copy updates normally');
+});
+
 test('the updater points at this repo', () => {
   // A copy-paste of the old panel's repo here would quietly install the wrong
   // extension over this one.
