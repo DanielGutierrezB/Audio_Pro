@@ -69,12 +69,16 @@ if [ -z "$MAJOR" ] || [ "$MAJOR" -lt 7 ]; then
   echo "✗ $BIN/ffmpeg reports major version '${MAJOR:-?}' — the chain needs 7 or newer" >&2
   exit 1
 fi
-# The list is captured once rather than piped per filter: `grep -q` exits as
-# soon as it matches, ffmpeg then dies of SIGPIPE, and under `pipefail` that
-# turns a *successful* match into a failed pipeline.
+# Matched against a shell variable instead of through a pipe. `grep -q` exits
+# the moment it matches, the writer upstream then dies of SIGPIPE, and under
+# `pipefail` that turns a *successful* match into a failed pipeline — which is
+# exactly how this check first reported a filter as missing when it was there.
 FILTERS="$("$BIN/ffmpeg" -hide_banner -filters 2>/dev/null)"
 for filter in adynamicequalizer acrossover aexciter adeclick adeclip loudnorm alimiter; do
-  if ! printf '%s\n' "$FILTERS" | grep -qE "[[:space:]]${filter}[[:space:]]"; then
+  # Each row is " TS <name> A->A  <description>", so the name is surrounded by
+  # whitespace; matching it bare would let `adeclick` satisfy a search for a
+  # filter whose name is a prefix of another.
+  if [[ "$FILTERS" != *[[:space:]]"$filter"[[:space:]]* ]]; then
     echo "✗ $BIN/ffmpeg is missing the '$filter' filter" >&2
     exit 1
   fi
