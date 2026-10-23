@@ -873,7 +873,7 @@ test('every In→Out is its own row, with its own name, next to the whole-class 
   assert.equal(queueMod.regionText(b.region), '9:48–9:50', 'the row says the same region as the file');
 });
 
-test('an In→Out patch goes on a new track at the top, and the panel says which', async () => {
+test('an In→Out patch goes on a new track of its own, and the panel says which', async () => {
   const dir = tmpProject();
   const h = harness({ projectDir: dir });
   h.queue.attach(dir);
@@ -882,9 +882,8 @@ test('an In→Out patch goes on a new track at the top, and the panel says which
   await h.queue.run([patch], PRESET);
 
   const places = h.calls.filter(c => c.name === 'place');
-  // The whole class keeps its placement; the patch asks for the top. At the
-  // bottom, a one-second clip sat out of view and looked like it was missing.
-  assert.deepEqual(places.map(c => c.placement), ['auto', 'top']);
+  // The whole class keeps its placement; the patch asks for a new track.
+  assert.deepEqual(places.map(c => c.placement), ['auto', 'new']);
   assert.ok(h.notes.some(n => n.msg === 'clase: parche 1:20–1:22 colocado en la pista A3 en 1:20.6.'),
     h.notes.map(n => n.msg).join(' | '));
 });

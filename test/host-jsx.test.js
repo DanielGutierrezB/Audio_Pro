@@ -127,12 +127,14 @@ test('In→Out reports its marks, and refuses to export if they moved since the 
   assert.match(exp, /'INOUT_CHANGED'/);
 });
 
-test('an In→Out patch is placed on a new track inserted at the top', () => {
+test('an In→Out patch always gets a new track appended at the end', () => {
   const body = source.slice(source.indexOf('function ppPlaceEnhanced'), source.indexOf('function ppRelinkMaster'));
   assert.match(body, /function ppPlaceEnhanced\(seqId, wavPath, muteOthers, startSeconds, label, placement\)/);
-  assert.match(body, /String\(placement\) === 'top'/);
-  // Inserted at index 0 (A1), not appended at the end where it was out of view.
-  assert.match(body, /addTracks\(0, 0, 1, 0, 0, 0\)/);
+  assert.match(body, /String\(placement\) === 'new'/);
+  // Appended after the last track (index = current count), and that new
+  // track is the one used — never a track that already existed.
+  assert.match(body, /addTracks\(0, 0, 1, 0, countNew, 0\)/);
+  assert.match(body, /idx = countNew/);
 });
 
 test('the colour labels are the ones the queue and the installer talk about', () => {
@@ -234,4 +236,78 @@ test('no track is added to a sequence other than the one being processed', () =>
     qe: { project: { getActiveSequence: () => ({ name: '02_clase' }) } },
   });
   assert.ok(same._qeSequenceFor({ name: '02_clase' }, []));
+});
+
+// A sequence for ppPlaceEnhanced to work on: `used` tracks with clips, plus
+// `empty` existing empty ones, and a QE that appends/inserts like Premiere.
+function mockSequence({ used, empty = 0 }) {
+  const makeTrack = () => {
+    const track = mockTrack(t => (t && typeof t === 'object' ? t.seconds : Number(t)));
+    track.setMute = () => {};
+    return track;
+  };
+  const tracks = [];
+  for (let i = 0; i < used; i++) {
+    const t = makeTrack();
+    t.overwriteClip({ nodeId: 'orig' + i }, 0);
+    tracks.push(t);
+  }
+  for (let i = 0; i < empty; i++) tracks.push(makeTrack());
+  Object.defineProperty(tracks, 'numTracks', { get() { return this.length; } });
+
+  const seq = { sequenceID: 's1', name: 'clase', audioTracks: tracks };
+  const sequences = [seq];
+  sequences.numSequences = 1;
+  const bin = { type: 2, name: 'Audio_Process', children: [] };
+  Object.defineProperty(bin.children, 'numItems', { get() { return this.length; } });
+  const root = { children: [bin] };
+  Object.defineProperty(root.children, 'numItems', { get() { return this.length; } });
+
+  const globals = {
+    File: class { constructor(p) { this.fsName = p; this.exists = true; } },
+    ProjectItemType: { BIN: 2 },
+    $: { sleep() {} },
+    app: {
+      enableQE() {},
+      project: {
+        sequences,
+        activeSequence: seq,
+        openSequence() {},
+        rootItem: root,
+        importFiles(paths) {
+          const media = paths[0];
+          bin.children.push({ type: 1, nodeId: 'patch', getMediaPath: () => media, setColorLabel() {} });
+        },
+      },
+    },
+    qe: {
+      project: {
+        getActiveSequence: () => ({
+          name: 'clase',
+          addTracks(nv, vAt, na, type, aAt) { tracks.splice(aAt, 0, makeTrack()); },
+        }),
+      },
+    },
+  };
+  return { globals, tracks };
+}
+
+test('an In→Out patch lands on a new track after the last one: A1–A3 in use → A4', () => {
+  const { globals, tracks } = mockSequence({ used: 3 });
+  const host = loadHost(globals);
+  const res = JSON.parse(host.ppPlaceEnhanced('s1', '/p/clase_inout.wav', '0', '80.6', '7', 'new'));
+  assert.equal(res.ok, true, res.error);
+  assert.equal(res.track, 3, 'index 3 is A4');
+  assert.equal(res.placedAt, 80.6);
+  assert.equal(tracks.length, 4);
+  assert.equal(tracks[3].clips[0].projectItem.nodeId, 'patch');
+  assert.ok([0, 1, 2].every(i => tracks[i].clips.length === 1), 'A1–A3 untouched');
+});
+
+test('a patch never reuses a track that already existed, even an empty one', () => {
+  const { globals, tracks } = mockSequence({ used: 2, empty: 1 });
+  const host = loadHost(globals);
+  const res = JSON.parse(host.ppPlaceEnhanced('s1', '/p/clase_inout.wav', '0', '12', '7', 'new'));
+  assert.equal(res.track, 3, 'A3 was empty but already existed; the patch gets A4');
+  assert.equal(tracks[2].clips.length, 0);
 });

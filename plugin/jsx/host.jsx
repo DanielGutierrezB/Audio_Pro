@@ -283,10 +283,10 @@ function ppExportAudio(seqId, outPath, presetPath, workArea, wantIn, wantOut) {
 // label: etiqueta de color (default Mango). Devuelve `nodeId`, que es con lo
 // que ppRelinkMaster vuelve a encontrar este item sin depender del nombre ni
 // de la posición en el bin.
-// placement: 'top' (parches de In→Out) = siempre una pista nueva arriba de
-// todo, en A1, donde el editor la ve sin buscar; cualquier otro valor (la clase
-// completa) = la primera pista vacía por encima del contenido, o una nueva al
-// final.
+// placement: 'new' (parches de In→Out) = siempre una pista nueva agregada al
+// final (con A1–A3 en uso, el parche va a A4), nunca una que ya existía;
+// cualquier otro valor (la clase completa) = la primera pista vacía por encima
+// del contenido, o una nueva al final.
 function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placement) {
   try {
     var seq = _activate(seqId);
@@ -323,18 +323,17 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placem
     dbg.push('tracksAntes=' + aT.numTracks + ' ultimoConClips=' + lastUsed);
     var idx = -1;
 
-    if (String(placement) === 'top') {
-      // Un parche de In→Out en una pista al final quedaba debajo de todo, fuera
-      // de la vista, y parecía que no se había colocado. Va en una pista nueva
-      // insertada en la posición 0 (A1); las demás bajan un lugar.
-      var countTop = aT.numTracks;
+    if (String(placement) === 'new') {
+      // Cada parche en su propia pista, nueva, al final: no se mezcla con nada
+      // que ya estuviera en la secuencia.
+      var countNew = aT.numTracks;
       try {
-        var qeTop = _qeSequenceFor(seq, dbg);
-        if (qeTop) { qeTop.addTracks(0, 0, 1, 0, 0, 0); $.sleep(600); }   // 1 audio MONO en el índice 0
-      } catch (eTop) { dbg.push('addTracks arriba err:' + eTop); }
-      dbg.push('addTracks ' + countTop + '->' + aT.numTracks + ' (mono,arriba)');
-      // Normalmente es la 0; si Premiere la puso en otro lado, la primera vacía.
-      idx = (aT.numTracks > countTop && aT[0].clips.numItems === 0) ? 0 : firstEmptyAbove(0);
+        var qeNew = _qeSequenceFor(seq, dbg);
+        if (qeNew) { qeNew.addTracks(0, 0, 1, 0, countNew, 0); $.sleep(600); }   // 1 audio MONO al final
+      } catch (eNew) { dbg.push('addTracks nueva err:' + eNew); }
+      dbg.push('addTracks ' + countNew + '->' + aT.numTracks + ' (mono,nueva al final)');
+      if (aT.numTracks > countNew && aT[countNew].clips.numItems === 0) idx = countNew;
+      else return _json({ ok: false, error: 'no pude agregar una pista nueva para el parche', debug: dbg });
     } else {
       // 1) ¿ya hay una pista vacía por encima del contenido? (A3 vacío) → usarla, sin tocar nada
       idx = firstEmptyAbove(lastUsed + 1);

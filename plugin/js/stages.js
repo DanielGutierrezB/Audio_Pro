@@ -141,12 +141,11 @@ async function exportSequence({ host, id, outPath, presetPath, workArea, region,
 // ── 4. Place the clean voice on a new track ──
 // In an In→Out run the other tracks are never muted: setMute silences a whole
 // track, which would kill the rest of the timeline outside the region. And the
-// patch goes on a new track at the top (A1): appended at the bottom, a
-// one-second clip sat below everything in view and looked like it had never
-// been placed.
+// patch always gets a brand-new track appended at the end (with A1–A3 in use,
+// A4), never a track that already existed.
 async function placeEnhanced({ host, id, wavPath, muteOthers, startSeconds, label, workArea }) {
   const effectiveMute = workArea ? 0 : (muteOthers ? 1 : 0);
-  const placement = workArea ? 'top' : 'auto';
+  const placement = workArea ? 'new' : 'auto';
   const res = await host.placeEnhanced(id, wavPath, effectiveMute, String(startSeconds ?? 0), label, placement);
   if (!res.ok) return { ok: false, error: res.error, debug: res.debug };
   if (!res.nodeId) {

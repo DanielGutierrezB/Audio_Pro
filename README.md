@@ -34,9 +34,9 @@ vista.
 
 **In → Out** es para parches: el pedazo que agregás al alargar un corte. Cada
 uno es una fila propia, con la región en el nombre
-(`clase_inout_7m39s-7m41s.wav`, y lo mismo en el bin), y se coloca en una
-pista nueva **arriba de todo** (A1) en el punto In; el panel avisa en qué pista
-quedó. Las marcas se leen al tocar el botón: si las movés mientras ese parche
+(`clase_inout_7m39s-7m41s.wav`, y lo mismo en el bin), y se coloca en el
+punto In en una **pista nueva al final** (si usás A1–A3, va a A4); el panel
+avisa en qué pista y en qué punto quedó. Las marcas se leen al tocar el botón: si las movés mientras ese parche
 espera turno, te pide que vuelvas a tocar In → Out en vez de exportar otra
 región.
 
