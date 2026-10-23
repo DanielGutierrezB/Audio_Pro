@@ -66,14 +66,17 @@ function harness(overrides = {}) {
 
   const phonos = {
     enhanceToFile: async (inPath, outPath, opts) => {
-      calls.push({ name: 'adobe', inPath, outPath, cleanVoice: opts.cleanVoice });
+      calls.push({ name: 'adobe', inPath, outPath, cleanVoice: opts.cleanVoice, trackId: opts.trackId, resume: !!opts.resume });
       await tick();
       // Returning nothing from adobeError is how a test says "this attempt
-      // succeeds", which is what the retry cases need.
+      // succeeds", which is what the retry cases need. It gets the options so
+      // it can act like Adobe at any point (e.g. accept the job, then time out).
       if (overrides.adobeError) {
-        const err = overrides.adobeError();
+        const err = overrides.adobeError(opts);
         if (err) throw err;
       }
+      // Like the real client: the job id is reported once Adobe accepts it.
+      if (opts.onTrack) opts.onTrack(opts.trackId || 'job-new');
       touch(outPath);
       return { ok: true, outPath };
     },
@@ -923,6 +926,129 @@ test('In→Out rows survive a reload with their region and sequence', async () =
   assert.equal(restored.id, patch.id);
   assert.equal(restored.seqId, 'seq1');
   assert.deepEqual(restored.region, { in: 10, out: 12 });
+});
+
+test('when Adobe takes too long, the row waits and Procesar resumes the same job', async () => {
+  const dir = tmpProject();
+  let slow = true;
+  const h = harness({
+    projectDir: dir,
+    adobeError: (opts) => {
+      if (!slow) return undefined;
+      // Adobe accepted the job (it reports the id), then the wait ran out.
+      opts.onTrack('job-1');
+      return Object.assign(new Error('Adobe sigue procesando después de 45 min'), { code: 'TIMEOUT', trackId: 'job-1' });
+    },
+  });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+
+  const first = await h.queue.run([item], PRESET);
+
+  // A paid job still running at Adobe is not a failure.
+  assert.equal(first.waiting, 1);
+  assert.equal(item.error, null);
+  assert.equal(item.stage, STAGE.ENHANCING);
+  assert.equal(item.adobeTrackId, 'job-1');
+  assert.match(h.queue.view(item).text, /Adobe sigue procesando/);
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'Audio_Process', 'queue.json'), 'utf8'));
+  assert.equal(saved.items[0].adobeTrackId, 'job-1', 'the job id survives closing the panel');
+
+  // Later: Procesar picks up that same job — no export, no upload, no new job.
+  slow = false;
+  h.calls.length = 0;
+  await h.queue.run(h.queue.pending(), PRESET);
+  const adobe = h.calls.filter(c => c.name === 'adobe');
+  assert.deepEqual(adobe.map(c => [c.trackId, c.resume]), [['job-1', true]]);
+  assert.ok(!h.names().includes('export'));
+  assert.equal(item.stage, STAGE.DONE);
+  assert.equal(item.adobeTrackId, null, 'the finished job is forgotten');
+});
+
+test('a job Adobe no longer has is uploaded again, once', async () => {
+  const dir = tmpProject();
+  const h = harness({
+    projectDir: dir,
+    adobeError: (opts) => (opts.resume ? Object.assign(new Error('gone'), { code: 'GONE', trackId: opts.trackId }) : undefined),
+  });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  await h.queue.run([item], PRESET);
+  // Pretend an earlier attempt left a job id behind and never got the result.
+  item.stage = STAGE.ENHANCING;
+  item.adobeTrackId = 'job-expired';
+  fs.rmSync(item.paths.enhancedRaw);
+  h.calls.length = 0;
+
+  await h.queue.run([item], PRESET);
+
+  const adobe = h.calls.filter(c => c.name === 'adobe');
+  assert.deepEqual(adobe.map(c => [c.trackId, c.resume]), [['job-expired', true], [undefined, false]]);
+  assert.equal(item.stage, STAGE.DONE);
+});
+
+test('a job held by Adobe\'s limit keeps its id, and after the reset the same job resumes', async () => {
+  const dir = tmpProject();
+  let limited = true;
+  const overrides = {
+    projectDir: dir,
+    adobeError: (opts) => {
+      if (!limited) return undefined;
+      opts.onTrack(opts.trackId || 'job-held');
+      return Object.assign(new Error('Sin créditos'), { code: 'LIMIT', retrySeconds: 6 * 3600, trackId: 'job-held' });
+    },
+  };
+  const h = harness(overrides);
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+
+  await h.queue.run([item], PRESET);
+  assert.equal(item.adobeTrackId, 'job-held');
+  assert.equal(item.error, null);
+  assert.match(h.queue.view(item).text, /esperando/);
+
+  // Midnight: the limit resets.
+  limited = false;
+  h.limit.limited = false;
+  h.calls.length = 0;
+  await h.queue.run(h.queue.pending(), PRESET);
+  assert.deepEqual(h.calls.filter(c => c.name === 'adobe').map(c => [c.trackId, c.resume]), [['job-held', true]],
+    'no new upload, no new job');
+  assert.equal(item.stage, STAGE.DONE);
+});
+
+test('a job Adobe never starts is uploaded again once, and does not loop', async () => {
+  const dir = tmpProject();
+  const h = harness({
+    projectDir: dir,
+    adobeError: (opts) => {
+      opts.onTrack(opts.trackId || 'job-' + Math.random().toString(36).slice(2, 6));
+      return Object.assign(new Error('nunca empezó'), { code: 'STUCK', trackId: opts.trackId });
+    },
+  });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  item.adobeTrackId = null;
+
+  const res = await h.queue.run([item], PRESET);
+
+  // First attempt creates a job that gets stuck (it has an id now), the
+  // second re-uploads once, and that one getting stuck too ends the run.
+  assert.equal(h.calls.filter(c => c.name === 'adobe').length, 2);
+  assert.equal(res.waiting, 1);
+  assert.equal(item.error, null);
+  assert.match(h.queue.view(item).text, /no empieza a procesarlo/);
+});
+
+test('a fresh export never resumes an Adobe job from an earlier export', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  item.adobeTrackId = 'job-of-another-export';
+  await h.queue.run([item], PRESET);
+  const adobe = h.calls.find(c => c.name === 'adobe');
+  assert.equal(adobe.resume, false, 'a new export is new audio: it needs a new job');
 });
 
 test('lanes bound how much runs at once, which is what keeps Premiere usable', async () => {

@@ -108,6 +108,10 @@ const ITEM_DEFAULTS = {
   // to a minute, and those rows go back to exporting rather than to Adobe.
   expectedSeconds: null,
   exportVerified: false,
+  // The Adobe job for this row's export, saved the moment Adobe accepts it.
+  // A row that stopped waiting (Adobe slow, panel closed) resumes this job
+  // instead of uploading again and paying for a new one.
+  adobeTrackId: null,
   // What alignment found: null, 'REALIGNED', 'PADDED' or 'PAIR?'.
   alignNote: null,
   // Why a finished master must not replace the clip: 'PAIR_MISMATCH' or
@@ -515,7 +519,7 @@ function createQueue(deps) {
     if (needs(STAGE.EXPORTING)) {
       // A fresh export: whatever a previous attempt left on this row (a clip
       // placed from a cut-short export, a master of it) belongs to that attempt.
-      Object.assign(item, { nodeId: null, alignNote: null, mode: null, verify: null, exportVerified: false });
+      Object.assign(item, { nodeId: null, alignNote: null, mode: null, verify: null, exportVerified: false, adobeTrackId: null });
       setStage(item, STAGE.EXPORTING);
       const res = await premiereLane.run(async () => {
         const { stem, runIndex } = stages.nextStem(dirs, stages.stemBase(item));
@@ -668,9 +672,15 @@ function createQueue(deps) {
   //     panel is told once (it opens the login a single time), and every other
   //     row waits instead of trying, failing and prompting on its own.
   async function runAdobe(item) {
-    const NO_CREDITS = 'esperando créditos de Adobe';
+    const NO_CREDITS = () => {
+      const ms = session.limitState().msRemaining || 0;
+      if (ms <= 0) return 'esperando créditos de Adobe';
+      const at = new Date(Date.now() + ms);
+      return `esperando a Adobe — su límite vuelve a las ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+    };
     const NO_SESSION = 'esperando la sesión de Adobe';
-    if (session.limitState().limited) return { ok: false, waiting: NO_CREDITS };
+    const STILL_PROCESSING = 'Adobe sigue procesando — tocá Procesar para seguir esperando (no se vuelve a subir)';
+    if (session.limitState().limited) return { ok: false, waiting: NO_CREDITS() };
     // No token at all is the same wait: the panel drops the dead one when it
     // asks for a login, possibly while other rows are still on their way here.
     if (!session.getToken() || session.getToken() === deadToken) return { ok: false, waiting: NO_SESSION };
@@ -678,32 +688,71 @@ function createQueue(deps) {
     const onStatus = (state, pct) => setProgress(item, `Adobe: ${state}${pct ? ' ' + pct + '%' : ''}`, pct);
     // Always 100%: the dry/wet blend belongs to the core (a 200 Hz band
     // split), so asking Adobe for less would blend the same two signals
-    // twice, two different ways.
+    // twice, two different ways. With a saved job id this resumes that job —
+    // no upload, no new job — instead of starting another.
     const enhance = () => phonos.enhanceToFile(item.paths.original, item.paths.enhancedRaw, {
-      token: session.getToken(), cleanVoice: 100, onStatus,
+      token: session.getToken(),
+      cleanVoice: 100,
+      onStatus,
+      trackId: item.adobeTrackId || undefined,
+      resume: !!item.adobeTrackId,
+      onTrack: (id) => {
+        if (item.adobeTrackId === id) return;
+        item.adobeTrackId = id;
+        save();
+      },
     });
-    try {
+
+    let reauthed = false;
+    let reuploaded = false;
+    for (;;) {
       try {
+        if (item.adobeTrackId) log(`  · retomo el trabajo de Adobe ${item.adobeTrackId} (sin volver a subir)`);
         await enhance();
+        item.adobeTrackId = null;
+        return { ok: true };
       } catch (err) {
-        if (err.code !== 'AUTH') throw err;
-        setProgress(item, 'reautenticando…');
-        if (!(await refreshSessionOnce(item))) return { ok: false, waiting: NO_SESSION };
-        await enhance();
+        // A job Adobe lost, or accepted and never started while not limited:
+        // nothing was processed, so uploading again costs no quota — but only
+        // once per run, or a job that keeps getting stuck would loop forever.
+        if ((err.code === 'GONE' || err.code === 'STUCK') && item.adobeTrackId && !reuploaded) {
+          log(err.code === 'GONE'
+            ? '  · Adobe ya no tenía el trabajo anterior; lo subo de nuevo'
+            : '  · Adobe nunca empezó el trabajo; lo subo de nuevo');
+          reuploaded = true;
+          item.adobeTrackId = null;
+          save();
+          continue;
+        }
+        if (err.code === 'STUCK') {
+          return { ok: false, waiting: 'Adobe no empieza a procesarlo — probá más tarde con Procesar' };
+        }
+        if (err.code === 'AUTH' && !reauthed) {
+          reauthed = true;
+          setProgress(item, 'reautenticando…');
+          if (await refreshSessionOnce(item)) continue;
+          return { ok: false, waiting: NO_SESSION };
+        }
+        if (err.code === 'AUTH') {
+          // Rejected even with the token the refresh just produced.
+          sessionLost(session.getToken());
+          return { ok: false, waiting: NO_SESSION };
+        }
+        if (err.code === 'LIMIT') {
+          // Adobe holds an accepted job until its limit resets; the id stays,
+          // so the next Procesar after the reset picks that job up.
+          session.armLimit(err.retrySeconds);
+          notify('⏳ Adobe llegó a su límite — mirá el aviso arriba.', 'warn');
+          return { ok: false, waiting: NO_CREDITS() };
+        }
+        if (err.code === 'TIMEOUT') {
+          // Not a failure: the job exists and is paid for. The id is kept, and
+          // the next Procesar goes back to waiting for that same job.
+          log('  · ' + err.message);
+          return { ok: false, waiting: STILL_PROCESSING };
+        }
+        return { ok: false, error: 'Adobe: ' + (err.message || String(err)) };
       }
-      return { ok: true };
-    } catch (err) {
-      if (err.code === 'LIMIT') {
-        session.armLimit(err.retrySeconds);
-        notify('⏳ Sin créditos de Adobe — mirá el contador arriba.', 'warn');
-        return { ok: false, waiting: NO_CREDITS };
-      }
-      if (err.code === 'AUTH') {
-        // Rejected even with the token the refresh just produced.
-        sessionLost(session.getToken());
-        return { ok: false, waiting: NO_SESSION };
-      }
-      return { ok: false, error: 'Adobe: ' + (err.message || String(err)) };
     }
   }
 

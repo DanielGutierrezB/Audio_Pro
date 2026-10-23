@@ -67,6 +67,7 @@ CORE_TESTS=(
   settings.test.js
   render-manifest.test.js
   enhance.test.js
+  phonos.test.js
   ffmpeg-run.test.js
   fixtures.js
 )

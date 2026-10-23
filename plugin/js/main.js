@@ -354,8 +354,17 @@ function refreshLimitBanner() {
     if (!s.limited) { refreshLimitBanner(); return; }
     var m = Math.floor(s.msRemaining / 60000);
     var sec = Math.floor((s.msRemaining % 60000) / 1000);
-    $('limitText').textContent = 'Sin créditos de Adobe (reportado ' +
-      new Date(s.reportedAt).toLocaleTimeString() + '). Reintentá en ' + m + ':' + pad(sec) + '.';
+    if (m >= 60) {
+      // Adobe's daily processing limit: hours, not a short pause. Say when
+      // it comes back, and what to do then.
+      var back = new Date(Date.now() + s.msRemaining);
+      $('limitText').textContent = 'Adobe llegó a su límite de procesamiento. Vuelve a las ' +
+        pad(back.getHours()) + ':' + pad(back.getMinutes()) + ' (en ' + Math.floor(m / 60) + ' h ' + (m % 60) +
+        ' min). Lo que quedó esperando se retoma con Procesar después de esa hora, sin volver a subirlo.';
+    } else {
+      $('limitText').textContent = 'Sin créditos de Adobe (reportado ' +
+        new Date(s.reportedAt).toLocaleTimeString() + '). Reintentá en ' + m + ':' + pad(sec) + '.';
+    }
   };
   tick();
   if (!limitTimer) limitTimer = setInterval(tick, 1000);
