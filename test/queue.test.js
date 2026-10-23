@@ -38,8 +38,8 @@ function harness(overrides = {}) {
   const calls = [];
 
   const host = {
-    exportAudio: async (id, outPath) => {
-      calls.push({ name: 'export', id, outPath });
+    exportAudio: async (id, outPath, presetPath, workArea, wantIn, wantOut) => {
+      calls.push({ name: 'export', id, outPath, workArea, wantIn, wantOut });
       if (overrides.exportFails) return { ok: false, error: 'NO_PRESET' };
       // A real export takes seconds and the file appears at the end; landing it
       // after a tick is what lets the same-name race show up in a test.
@@ -195,7 +195,7 @@ test('an In→Out run normalises raiseOnly and never mutes the other tracks', as
   const dir = tmpProject();
   const { queue, calls } = harness({ projectDir: dir, inPoint: 12.5 });
   queue.attach(dir);
-  const item = queue.upsert({ id: '3', name: 'clase' }, { workArea: 1 });
+  const item = queue.addInOut({ id: '3', name: 'clase' }, { in: 12.5, out: 15.2 });
   await queue.run([item], PRESET);
 
   const place = calls.find(c => c.name === 'place');
@@ -205,7 +205,10 @@ test('an In→Out run normalises raiseOnly and never mutes the other tracks', as
   // The clip starts at the In point so it lines up with what was processed.
   assert.equal(place.start, '12.5');
   assert.equal(calls.find(c => c.name === 'master').settings.normalizeMode, 'raiseOnly');
-  assert.match(item.paths.original, /clase_inout\.wav$/);
+  assert.match(item.paths.original, /clase_inout_0m12s-0m16s\.wav$/);
+  // Exported from the sequence it belongs to, with the marks it was given.
+  const exp = calls.find(c => c.name === 'export');
+  assert.deepEqual([exp.id, exp.workArea, exp.wantIn, exp.wantOut], ['3', 1, 12.5, 15.2]);
 });
 
 test('a failed master leaves the clip placed, and retrying re-runs only the master', async () => {
@@ -482,9 +485,10 @@ test('"Secuencia activa" on an unfinished row resumes it instead of starting ove
   assert.equal(again.stage, STAGE.MASTERING, 'not reset: the Adobe pass is already paid for');
   assert.equal(again.error, null, 'pressing the button on it is the explicit retry');
 
-  // Switching to In→Out is a different export, so that does start fresh.
-  const inout = h.queue.upsert({ id: '1', name: 'clase' }, { workArea: 1 });
+  // An In→Out on the same sequence is a separate row and leaves this one alone.
+  const inout = h.queue.addInOut({ id: '1', name: 'clase' }, { in: 1, out: 2 });
   assert.equal(inout.stage, STAGE.PENDING);
+  assert.equal(item.stage, STAGE.MASTERING);
 });
 
 test('upsert refuses a row that is running', async () => {
@@ -835,6 +839,73 @@ test('the same check runs for a row already in memory, not only on load', async 
   h.calls.length = 0;
   await h.queue.run([item], PRESET);
   assert.equal(h.names()[0], 'adobe', 'back to Adobe, because the aligned file and the raw return are gone');
+});
+
+test('every In→Out is its own row, with its own name, next to the whole-class run', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const whole = h.queue.upsert({ id: 'seq1', name: 'clase 01' });
+  await h.queue.run([whole], PRESET);
+
+  // The editor extends two cuts, and patches both — one region twice.
+  const a = h.queue.addInOut({ id: 'seq1', name: 'clase 01' }, { in: 459.6, out: 460.8 });
+  const b = h.queue.addInOut({ id: 'seq1', name: 'clase 01' }, { in: 588.5, out: 589.9 });
+  await h.queue.run([a, b], PRESET);
+  const again = h.queue.addInOut({ id: 'seq1', name: 'clase 01' }, { in: 459.6, out: 460.8 });
+  await h.queue.run([again], PRESET);
+
+  assert.equal(h.queue.all().length, 4, 'nothing replaced anything');
+  assert.equal(whole.stage, STAGE.DONE, 'the whole-class row is untouched');
+  assert.deepEqual(
+    [a, b, again].map(i => path.basename(i.paths.master)),
+    ['clase 01_inout_7m39s-7m41s.wav', 'clase 01_inout_9m48s-9m50s.wav', 'clase 01_inout_7m39s-7m41s_2.wav'],
+  );
+  // All of them export from and place into the same Premiere sequence.
+  assert.ok(h.calls.filter(c => c.name === 'export' || c.name === 'place').every(c => c.id === 'seq1'));
+  // And the bin never ends up with two items of the same name.
+  const binNames = h.calls.filter(c => c.name === 'rename').map(c => c.newName);
+  assert.equal(new Set(binNames).size, binNames.length, binNames.join(' | '));
+  assert.ok(binNames.includes('clase 01 · Audio Pro'));
+  assert.ok(binNames.includes('clase 01_inout_9m48s-9m50s · Audio Pro'));
+  assert.equal(queueMod.regionText(b.region), '9:48–9:50', 'the row says the same region as the file');
+});
+
+test('a reprocessed class gets a bin name of its own too', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  await h.queue.run([h.queue.upsert({ id: '1', name: 'clase' })], PRESET);
+  await h.queue.run([h.queue.upsert({ id: '1', name: 'clase' })], PRESET);
+  assert.deepEqual(h.calls.filter(c => c.name === 'rename').map(c => c.newName),
+    ['clase · Audio Pro', 'clase_2 · Audio Pro']);
+});
+
+test('an In→Out can run while the whole class is still running', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const whole = h.queue.upsert({ id: 'seq1', name: 'clase' });
+  const wholeRun = h.queue.run([whole], PRESET);
+  // The whole-class row is busy, so "Secuencia activa" would be refused...
+  assert.equal(h.queue.upsert({ id: 'seq1', name: 'clase' }), null);
+  // ...but a patch is a different row and goes ahead.
+  const patch = h.queue.addInOut({ id: 'seq1', name: 'clase' }, { in: 10, out: 12 });
+  const res = await h.queue.run([patch], PRESET);
+  await wholeRun;
+  assert.equal(res.done, 1);
+  assert.equal(whole.stage, STAGE.DONE);
+});
+
+test('In→Out rows survive a reload with their region and sequence', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const patch = h.queue.addInOut({ id: 'seq1', name: 'clase' }, { in: 10, out: 12 });
+  const [restored] = harness({ projectDir: dir }).queue.attach(dir);
+  assert.equal(restored.id, patch.id);
+  assert.equal(restored.seqId, 'seq1');
+  assert.deepEqual(restored.region, { in: 10, out: 12 });
 });
 
 test('lanes bound how much runs at once, which is what keeps Premiere usable', async () => {

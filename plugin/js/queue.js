@@ -89,7 +89,14 @@ function plural(n, word) {
 // saved but forgotten on load (or the other way round).
 const ITEM_DEFAULTS = {
   stage: STAGE.PENDING,
+  // The Premiere sequence this row exports from. Equal to the row id for a
+  // whole-sequence run; an In→Out run is a row of its own (its id is unique
+  // per click) pointing at the same sequence.
+  seqId: null,
   workArea: 0,
+  // In→Out runs: the marks when the button was pressed, in seconds. They name
+  // the files and are checked again at export time.
+  region: null,
   stem: null,
   runIndex: 1,
   paths: null,
@@ -116,6 +123,7 @@ function toItem(x) {
   const item = { id: String(x.id), name: x.name || ('Secuencia ' + x.id) };
   for (const [key, fallback] of Object.entries(ITEM_DEFAULTS)) item[key] = x[key] ?? fallback;
   if (!ORDER.includes(item.stage)) item.stage = STAGE.PENDING;
+  if (!item.seqId) item.seqId = item.id;
   return item;
 }
 
@@ -406,17 +414,15 @@ function createQueue(deps) {
     return fresh.length;
   }
 
-  // The row for `sequence`, ready to run. An unfinished row of the same kind
-  // is handed back as it is, so pressing "Secuencia activa" again resumes it
+  // The whole-sequence row for `sequence`, ready to run. An unfinished one is
+  // handed back as it is, so pressing "Secuencia activa" again resumes it
   // instead of re-exporting and paying Adobe a second time. A finished or
-  // blocked row — or a switch between the whole sequence and In→Out — starts
-  // a fresh run (with its own `_2` stem, so nothing on the timeline changes).
-  // Returns null while the row is running.
-  function upsert(sequence, { workArea = 0 } = {}) {
-    const kind = workArea ? 1 : 0;
+  // blocked row starts a fresh run (with its own `_2` stem, so nothing on the
+  // timeline changes). Returns null while the row is running.
+  function upsert(sequence) {
     const existing = byId(sequence.id);
     if (existing && running.has(existing.id)) return null;
-    const resumable = existing && existing.workArea === kind && !existing.blocked
+    const resumable = existing && !existing.workArea && !existing.blocked
       && existing.stage !== STAGE.PENDING && existing.stage !== STAGE.DONE;
     if (resumable) {
       // Pressing the button on this sequence is the explicit retry.
@@ -424,12 +430,30 @@ function createQueue(deps) {
       return existing;
     }
 
-    const fresh = toItem({ id: sequence.id, name: sequence.name, workArea: kind });
+    const fresh = toItem({ id: sequence.id, name: sequence.name });
     if (existing) Object.assign(existing, fresh);
     else items.push(fresh);
     emit();
     save();
     return existing || fresh;
+  }
+
+  // An In→Out run: always a new row. Each press is a different patch — the
+  // editor extended a cut and needs audio for the part that was added — so it
+  // never resumes or replaces another row, including the whole-class run of
+  // the same sequence, which may well be mastering at that moment.
+  function addInOut(sequence, region) {
+    const item = toItem({
+      id: `${sequence.id}#${Date.now()}`,
+      seqId: sequence.id,
+      name: sequence.name,
+      workArea: 1,
+      region: { in: Number(region.in), out: Number(region.out) },
+    });
+    items.push(item);
+    emit();
+    save();
+    return item;
   }
 
   // Takes rows off the list. Their files stay where they are — this is the
@@ -494,17 +518,18 @@ function createQueue(deps) {
       Object.assign(item, { nodeId: null, alignNote: null, mode: null, verify: null, exportVerified: false });
       setStage(item, STAGE.EXPORTING);
       const res = await premiereLane.run(async () => {
-        const { stem, runIndex } = stages.nextStem(dirs, item.name, item.workArea);
+        const { stem, runIndex } = stages.nextStem(dirs, stages.stemBase(item));
         item.stem = stem;
         item.runIndex = runIndex;
         item.paths = stages.pathsFor(dirs, stem);
         if (runIndex > 1) log(`  · reproceso #${runIndex}: escribo en ${stem}.wav (no piso el anterior)`);
         return stages.exportSequence({
           host,
-          id: item.id,
+          id: item.seqId,
           outPath: item.paths.original,
           presetPath,
           workArea: item.workArea,
+          region: item.region,
           pollMs: exportPollMs,
           stallMs: exportStallMs,
           onProgress: (done, total) => setProgress(item,
@@ -552,7 +577,7 @@ function createQueue(deps) {
       setStage(item, STAGE.PLACING);
       const res = await premiereLane.run(() => stages.placeEnhanced({
         host,
-        id: item.id,
+        id: item.seqId,
         wavPath: item.paths.enhanced,
         muteOthers: settings.muteOthers,
         startSeconds: item.inPoint,
@@ -605,7 +630,10 @@ function createQueue(deps) {
       masterPath: item.paths.master,
       mode: item.mode,
       label: settings.labelDone,
-      rename: `${item.name} · Audio Pro`,
+      // Named after its own files, which are unique by construction: the bin
+      // never holds two items with the same name, whether they are two runs of
+      // a class or a class and its In→Out patches.
+      rename: `${item.stem} · Audio Pro`,
     }));
     if (!relink.ok) {
       if (relink.lost) {
@@ -704,7 +732,7 @@ function createQueue(deps) {
     const targets = list.filter(i => i && isPending(i) && !running.has(i.id));
     const results = await Promise.all(targets.map(async (item) => {
       running.add(item.id);
-      log(`▶ ${item.name}${item.workArea ? ' [In→Out]' : ''}`);
+      log(`▶ ${item.name}${item.region ? ` [In→Out ${stages.regionText(item.region)}]` : ''}`);
       try {
         return await runItem(item, { presetPath });
       } catch (err) {
@@ -727,6 +755,7 @@ function createQueue(deps) {
     attach,
     addSequences,
     upsert,
+    addInOut,
     remove,
     clearErrors,
     run,
@@ -745,6 +774,7 @@ module.exports = {
   isOurFfmpeg,
   resumeStageFor,
   plural,
+  regionText: stages.regionText,
   STAGE,
   QUEUE_VERSION,
 };

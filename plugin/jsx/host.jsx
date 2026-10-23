@@ -70,7 +70,9 @@ function ppGetActiveSequence() {
   try {
     var s = app.project.activeSequence;
     if (!s) return _json({ ok: false, error: 'No hay una secuencia activa' });
-    return _json({ ok: true, id: String(s.sequenceID), name: s.name });
+    // Las marcas In/Out van con la respuesta porque el botón In→Out las fija
+    // en ese momento: son el nombre de la corrida y lo que el export verifica.
+    return _json({ ok: true, id: String(s.sequenceID), name: s.name, inPoint: _seqInSeconds(s), outPoint: _seqOutSeconds(s) });
   } catch (e) { return _json({ ok: false, error: String(e) }); }
 }
 
@@ -211,7 +213,12 @@ function _seqOutSeconds(seq) {
 // presetPath (opcional): .epr provisto por el panel (presets/wav-24-mono-48.epr
 // dentro de la extensión). Si no viene o no existe, se busca/genera uno.
 // workArea: 0 = secuencia entera (default), 1 = solo el rango In→Out.
-function ppExportAudio(seqId, outPath, presetPath, workArea) {
+// wantIn/wantOut (solo In→Out): las marcas que tenía la secuencia cuando el
+// editor tocó el botón. exportAsMediaDirect exporta las marcas *actuales*, y
+// entre el clic y el export puede pasar un rato (otro export en curso); si el
+// editor las movió en el medio, se exportaría otra región con el nombre de la
+// primera. En ese caso se avisa en vez de exportar.
+function ppExportAudio(seqId, outPath, presetPath, workArea, wantIn, wantOut) {
   var dbg = [];
   try {
     var seq = _activate(seqId);
@@ -223,6 +230,11 @@ function ppExportAudio(seqId, outPath, presetPath, workArea) {
       outSec = _seqOutSeconds(seq);
       dbg.push('inOut=' + inSec + '..' + outSec);
       if (!(outSec > inSec)) return _json({ ok: false, error: 'NO_INOUT', debug: dbg });
+      var wi = parseFloat(wantIn), wo = parseFloat(wantOut);
+      if (!isNaN(wi) && !isNaN(wo) && (Math.abs(wi - inSec) > 0.05 || Math.abs(wo - outSec) > 0.05)) {
+        dbg.push('pedido=' + wi + '..' + wo);
+        return _json({ ok: false, error: 'INOUT_CHANGED', debug: dbg });
+      }
     }
     var preset = (presetPath && new File(presetPath).exists) ? presetPath : _findOrCreatePreset();
     dbg.push('preset=' + (preset || 'NULL'));

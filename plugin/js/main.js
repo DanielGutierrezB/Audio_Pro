@@ -110,8 +110,9 @@ var host = {
   getOpenSequences: function () { return callHost('ppGetOpenSequences'); },
   getActiveSequence: function () { return callHost('ppGetActiveSequence'); },
   getProjectDir: function () { return callHost('ppGetProjectDir'); },
-  exportAudio: function (id, outPath, presetPath, workArea) {
-    return callHost('ppExportAudio', [id, outPath, presetPath, workArea]);
+  exportAudio: function (id, outPath, presetPath, workArea, wantIn, wantOut) {
+    return callHost('ppExportAudio', [id, outPath, presetPath, workArea,
+      wantIn == null ? '' : wantIn, wantOut == null ? '' : wantOut]);
   },
   placeEnhanced: function (id, wavPath, muteOthers, startSeconds, label) {
     return callHost('ppPlaceEnhanced', [id, wavPath, muteOthers, startSeconds, label]);
@@ -231,7 +232,11 @@ function renderQueue(items) {
     name.textContent = item.name;
     top.appendChild(name);
 
-    if (item.workArea) top.appendChild(tag('In→Out'));
+    if (item.workArea) {
+      top.appendChild(tag(item.region
+        ? 'In→Out ' + queueMod.regionText(item.region)
+        : 'In→Out'));
+    }
     if (item.runIndex > 1) top.appendChild(tag('#' + item.runIndex));
     if (item.alignNote === 'PAIR?') top.appendChild(tag('par dudoso'));
     if (item.mode === 1) top.appendChild(tag('sin Adobe'));
@@ -376,19 +381,35 @@ async function withProjectDir() {
   return pd.dir;
 }
 
-async function runOne(workArea) {
-  if (!(await ensureReady(function () { return runOne(workArea); }))) return;
+async function runActive() {
+  if (!(await ensureReady(runActive))) return;
   var dir = await withProjectDir();
   if (!dir) return;
 
   var seq = await host.getActiveSequence();
   if (!seq.ok) { notify(seq.error || 'No hay una secuencia activa.', 'error'); return; }
 
-  var item = queue.upsert(seq, { workArea: workArea });
+  var item = queue.upsert(seq);
   if (!item) { notify(seq.name + ' ya se está procesando.', 'info'); return; }
   if (item.stage !== queueMod.STAGE.PENDING) {
     notify('Retomo ' + item.name + ' donde quedó — sin volver a gastar créditos.', 'info');
   }
+  await runQueue([item]);
+}
+
+// In→Out: the marks are read at the click and become part of the run — its
+// row, its file names, and what the export checks — so the patch is the one
+// the editor marked even if the marks move while it waits its turn.
+async function runInOut() {
+  if (!(await ensureReady(runInOut))) return;
+  var dir = await withProjectDir();
+  if (!dir) return;
+
+  var seq = await host.getActiveSequence();
+  if (!seq.ok) { notify(seq.error || 'No hay una secuencia activa.', 'error'); return; }
+  if (!(seq.outPoint > seq.inPoint)) { notify('Marcá In y Out en la secuencia (I y O) y volvé a tocar In → Out.', 'warn'); return; }
+
+  var item = queue.addInOut(seq, { in: seq.inPoint, out: seq.outPoint });
   await runQueue([item]);
 }
 
@@ -618,8 +639,8 @@ function wire() {
   });
   $('updateBtn').addEventListener('click', guarded(doUpdate));
   $('connectBtn').addEventListener('click', openLogin);
-  $('activeBtn').addEventListener('click', guarded(function () { return runOne(0); }));
-  $('inoutBtn').addEventListener('click', guarded(function () { return runOne(1); }));
+  $('activeBtn').addEventListener('click', guarded(runActive));
+  $('inoutBtn').addEventListener('click', guarded(runInOut));
   $('loadBtn').addEventListener('click', guarded(loadSequences));
   $('runBtn').addEventListener('click', guarded(runFromToolbar));
   $('retryBtn').addEventListener('click', function () {

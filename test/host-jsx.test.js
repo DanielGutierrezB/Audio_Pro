@@ -119,6 +119,14 @@ test('the fallback JSON writer produces JSON the panel can parse', () => {
   assert.ok(!('skipped' in parsed));
 });
 
+test('In→Out reports its marks, and refuses to export if they moved since the click', () => {
+  const active = source.slice(source.indexOf('function ppGetActiveSequence'), source.indexOf('function ppGetProjectDir'));
+  assert.match(active, /inPoint: _seqInSeconds\(s\), outPoint: _seqOutSeconds\(s\)/);
+  const exp = source.slice(source.indexOf('function ppExportAudio'), source.indexOf('function ppPlaceEnhanced'));
+  assert.match(exp, /function ppExportAudio\(seqId, outPath, presetPath, workArea, wantIn, wantOut\)/);
+  assert.match(exp, /'INOUT_CHANGED'/);
+});
+
 test('the colour labels are the ones the queue and the installer talk about', () => {
   assert.match(source, /var LABEL_IN_PROGRESS = 7;/, 'Mango');
   assert.match(source, /var LABEL_DONE = 13;/, 'Verde');

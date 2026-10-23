@@ -49,12 +49,39 @@ function pathsFor(dirs, stem) {
   };
 }
 
+// A region as whole seconds that cover it: the start rounded down, the end
+// rounded up, so 7:39.6–7:40.8 reads 7:39–7:41 and never looks shorter than
+// it is. Minutes are not wrapped at 60, because classes run past an hour.
+function regionParts(region) {
+  const whole = (sec) => [Math.floor(sec / 60), String(sec % 60).padStart(2, '0')];
+  return [whole(Math.max(0, Math.floor(region.in))), whole(Math.max(0, Math.ceil(region.out)))];
+}
+
+// "7m39s-7m41s" — for file names: no colons, which not every filesystem allows.
+function regionStem(region) {
+  return regionParts(region).map(([m, s]) => `${m}m${s}s`).join('-');
+}
+
+// "7:39–7:41" — for the row.
+function regionText(region) {
+  return regionParts(region).map(([m, s]) => `${m}:${s}`).join('–');
+}
+
+// The name every file of a run starts from. A whole-sequence run is named after
+// the sequence; an In→Out run also carries its region, so two patches of the
+// same class can be told apart by name — on disk and in the bin — and a patch
+// is never mistaken for the class.
+function stemBase(item) {
+  const base = safeName(item.name);
+  if (item.region) return `${base}_inout_${regionStem(item.region)}`;
+  return item.workArea ? `${base}_inout` : base;
+}
+
 // A re-run must never overwrite a file a project item is pointing at: Premiere
 // keeps the media open, the clip on the timeline would silently change under
 // the editor, and the previous master — which may be the good one — is gone.
 // So each run gets its own stem: `clase`, then `clase_2`, `clase_3`.
-function nextStem(dirs, name, workArea) {
-  const base = safeName(name) + (workArea ? '_inout' : '');
+function nextStem(dirs, base) {
   for (let n = 1; n < 500; n++) {
     const stem = n === 1 ? base : `${base}_${n}`;
     const p = pathsFor(dirs, stem);
@@ -74,12 +101,13 @@ function nextStem(dirs, name, workArea) {
 // export-wait.js for why the old wait cut classes to a minute). The caller
 // runs this inside the Premiere lane, so nothing else talks to Premiere until
 // the export is whole.
-async function exportSequence({ host, id, outPath, presetPath, workArea, onProgress, pollMs, stallMs }) {
-  const res = await host.exportAudio(id, outPath, presetPath, workArea ? 1 : 0);
+async function exportSequence({ host, id, outPath, presetPath, workArea, region, onProgress, pollMs, stallMs }) {
+  const res = await host.exportAudio(id, outPath, presetPath, workArea ? 1 : 0, region?.in, region?.out);
   if (!res.ok) {
     const label = res.error === 'NO_PRESET' ? 'sin preset WAV'
       : res.error === 'NO_INOUT' ? 'marcá In y Out (I y O)'
-        : 'error al exportar';
+        : res.error === 'INOUT_CHANGED' ? 'las marcas In/Out cambiaron desde que tocaste el botón — volvé a tocar In → Out'
+          : 'error al exportar';
     return { ok: false, error: label, raw: res.error, debug: res.debug };
   }
   const written = await exportWait.waitForExport({
@@ -163,6 +191,8 @@ module.exports = {
   dirsFor,
   pathsFor,
   nextStem,
+  stemBase,
+  regionText,
   safeName,
   PATHS,
 };
