@@ -220,7 +220,7 @@ button:disabled { opacity: .45; cursor: default; }
   border: 1px solid var(--border);
   overflow: hidden;
 }
-#queueList li .top { display: flex; align-items: baseline; gap: 7px; }
+#queueList li .top { display: flex; align-items: center; gap: 7px; }
 #queueList li .name {
   flex: 1;
   font-size: 12px;
@@ -254,6 +254,11 @@ button:disabled { opacity: .45; cursor: default; }
 #queueList li.done .st { color: var(--ok); }
 #queueList li.err { border-color: rgba(229, 83, 75, .4); }
 #queueList li.err .st { color: var(--err); }
+#queueList li.wait .st { color: var(--warn); }
+
+/* Row and select-all checkboxes. */
+.pick { flex: none; margin: 0 2px 0 0; cursor: pointer; }
+.pick:disabled { cursor: default; opacity: .4; }
 #queueList li .retry {
   margin-left: 6px;
   font-size: 10px;

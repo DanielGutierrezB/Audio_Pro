@@ -108,10 +108,14 @@
 
   <section class="list">
     <div class="listhead">
+      <input type="checkbox" id="selectAll" class="pick" data-tip="Seleccionar todas" />
       <span id="queueCount">0 secuencias</span>
       <span class="spacer"></span>
+      <button id="retryBtn" class="small" hidden
+              data-tip="Vuelve a poner en espera las que fallaron (las seleccionadas, o todas). Después tocá Procesar.">↻ Reintentar</button>
+      <button id="removeBtn" class="small" disabled
+              data-tip="Quita de la lista las seleccionadas. No borra ningún archivo.">Quitar</button>
       <button id="runBtn" class="small">▶ Procesar</button>
-      <button id="clearDoneBtn" class="small" data-tip="Quitar las terminadas">Limpiar</button>
     </div>
     <ul id="queueList"></ul>
     <p id="queueEmpty" class="empty">

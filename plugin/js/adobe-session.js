@@ -263,6 +263,9 @@ function createSession({ cs, log, onState = () => {} } = {}) {
   return {
     getToken: () => token,
     hasToken: () => !!token,
+    // True when there is no token or its own payload says it has expired —
+    // the free, local check. Adobe can still reject a token that passes it.
+    isExpired: () => !token || phonos.isTokenExpired(token),
     setToken,
     clear,
     verify,

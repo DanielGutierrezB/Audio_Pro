@@ -200,9 +200,15 @@ function readSettingsFromUi(persist) {
 // ── rendering the queue ──
 // Built with createElement/textContent rather than innerHTML: the names come
 // from Premiere and are not trustworthy HTML.
+// Which rows are ticked. UI state only: it lives here, not in the queue, and
+// rows that leave the list drop out of it on the next render.
+var selected = new Set();
+
 function renderQueue(items) {
   var ul = $('queueList');
   ul.innerHTML = '';
+  var present = new Set(items.map(function (i) { return i.id; }));
+  selected.forEach(function (id) { if (!present.has(id)) selected.delete(id); });
 
   items.forEach(function (item) {
     var li = document.createElement('li');
@@ -212,6 +218,13 @@ function renderQueue(items) {
 
     var top = document.createElement('div');
     top.className = 'top';
+
+    var pick = document.createElement('input');
+    pick.type = 'checkbox';
+    pick.className = 'pick';
+    pick.checked = selected.has(item.id);
+    pick.setAttribute('data-select', item.id);
+    top.appendChild(pick);
 
     var name = document.createElement('span');
     name.className = 'name';
@@ -228,8 +241,9 @@ function renderQueue(items) {
     st.textContent = view.text;
     top.appendChild(st);
 
-    // Retrying resumes at the stage that failed, so it never re-exports and
-    // never pays Adobe for a sequence that already came back.
+    // "reintentar" only takes the row out of the error and back into the list
+    // of things Procesar will run; the next run resumes at the stage that
+    // failed, so it never re-exports or pays Adobe for what already came back.
     if (view.retry) {
       var retry = document.createElement('button');
       retry.className = 'retry';
@@ -251,11 +265,42 @@ function renderQueue(items) {
   });
 
   $('queueEmpty').style.display = items.length ? 'none' : 'block';
-  var pending = queue.pending().length;
+  renderToolbar(items);
+}
+
+// The buttons above the list act on the ticked rows when there are any, and
+// on the whole list otherwise — so "select all + Quitar" clears the list and
+// "Reintentar" with nothing ticked retries everything that failed.
+function selectionScope(items) {
+  var picked = items.filter(function (i) { return selected.has(i.id); });
+  return picked.length ? picked : null;
+}
+
+function renderToolbar(items) {
+  var picked = selectionScope(items);
+  var scope = picked || items;
+  var pendingIds = new Set(queue.pending().map(function (i) { return i.id; }));
+  var runnable = scope.filter(function (i) { return pendingIds.has(i.id); }).length;
+  var retryable = scope.filter(function (i) { return queue.view(i).retry; }).length;
+  var errors = items.filter(function (i) { return i.error; }).length;
+
   $('queueCount').textContent = queueMod.plural(items.length, 'secuencia') +
-    (items.length ? ' · ' + pending + ' pend.' : '');
-  $('runBtn').disabled = busy || pending === 0;
-  $('runBtn').textContent = '▶ Procesar' + (pending ? ' (' + pending + ')' : '');
+    (items.length ? ' · ' + pendingIds.size + ' pend.' : '') +
+    (errors ? ' · ' + errors + ' con error' : '');
+
+  var all = $('selectAll');
+  all.checked = items.length > 0 && selected.size === items.length;
+  all.indeterminate = selected.size > 0 && selected.size < items.length;
+  all.disabled = items.length === 0;
+
+  $('retryBtn').hidden = retryable === 0;
+  $('retryBtn').textContent = '↻ Reintentar (' + retryable + ')';
+
+  $('removeBtn').disabled = !picked;
+  $('removeBtn').textContent = 'Quitar' + (picked ? ' (' + picked.length + ')' : '');
+
+  $('runBtn').disabled = busy || runnable === 0;
+  $('runBtn').textContent = (picked ? '▶ Procesar selección' : '▶ Procesar') + (runnable ? ' (' + runnable + ')' : '');
 }
 
 function tag(text) {
@@ -268,7 +313,7 @@ function tag(text) {
 // Once the clip is on the timeline and not yet relinked the row carries the
 // Mango edge too, so the list and the project panel agree about what is still
 // in progress.
-var TONE_CLASS = { work: 'work', err: 'err', done: 'done', idle: '' };
+var TONE_CLASS = { work: 'work', err: 'err', done: 'done', wait: 'wait', idle: '' };
 function rowClass(item, view) {
   var mango = item.nodeId && item.stage !== queueMod.STAGE.DONE ? 'mango' : '';
   return [TONE_CLASS[view.tone], mango].filter(Boolean).join(' ');
@@ -332,7 +377,7 @@ async function withProjectDir() {
 }
 
 async function runOne(workArea) {
-  if (!(await ensureReady())) return;
+  if (!(await ensureReady(function () { return runOne(workArea); }))) return;
   var dir = await withProjectDir();
   if (!dir) return;
 
@@ -357,16 +402,41 @@ async function loadSequences() {
     added ? 'success' : 'info');
 }
 
-async function runPending() {
-  if (!(await ensureReady())) return;
-  var dir = await withProjectDir();
-  if (!dir) return;
-  await runQueue(queue.pending());
+// Procesar: the ticked rows if any, otherwise everything pending. The ids are
+// what gets remembered if Adobe asks for a login midway, so the same set of
+// rows resumes afterwards — not whatever happens to be pending by then.
+function runRows(ids) {
+  return async function run() {
+    if (!(await ensureReady(run))) return;
+    var dir = await withProjectDir();
+    if (!dir) return;
+    var pendingIds = new Set(queue.pending().map(function (i) { return i.id; }));
+    var list = (ids || queue.pending().map(function (i) { return i.id; }))
+      .filter(function (id) { return pendingIds.has(id); })
+      .map(queue.get);
+    await runQueue(list);
+  };
 }
 
-async function retryRow(id) {
-  if (!(await ensureReady())) return;
-  await runQueue([queue.get(id)]);
+function runFromToolbar() {
+  var picked = selectionScope(queue.all());
+  var ids = picked ? picked.map(function (i) { return i.id; }) : null;
+  selected.clear();
+  return runRows(ids)();
+}
+
+function retryRows(ids) {
+  var n = queue.clearErrors(ids);
+  notify(n ? queueMod.plural(n, 'secuencia') + ' de nuevo en espera — tocá Procesar.' : 'No había nada para reintentar.', 'info');
+}
+
+function removeSelected() {
+  var ids = Array.from(selected);
+  var removed = queue.remove(ids);
+  selected.clear();
+  var kept = ids.length - removed;
+  notify('Quité ' + queueMod.plural(removed, 'secuencia') + ' de la lista' +
+    (kept ? ' (' + kept + ' en proceso quedan hasta terminar)' : '') + '. Los archivos no se tocan.', 'info');
 }
 
 // Every action is busy from the click itself, not from the moment it reaches
@@ -380,7 +450,10 @@ var BUSY_BUTTONS = ['activeBtn', 'inoutBtn', 'loadBtn', 'runBtn', 'updateBtn'];
 function setBusy(on) {
   busy = on;
   BUSY_BUTTONS.forEach(function (id) { $(id).disabled = on; });
-  if (!on && queue) renderQueue(queue.all());
+  if (!on && queue) {
+    renderQueue(queue.all());
+    resumeAfterLogin();
+  }
 }
 
 function guarded(action) {
@@ -398,22 +471,58 @@ function guarded(action) {
 async function runQueue(list) {
   if (!list.length) { notify('No hay nada pendiente.', 'info'); return; }
   notify('Procesando ' + queueMod.plural(list.length, 'secuencia') + '…', 'info');
+  lastBatch = list.map(function (i) { return i.id; });
   var res = await queue.run(list, { presetPath: WAV_PRESET });
   var parts = [queueMod.plural(res.done, 'lista')];
   if (res.partial) parts.push(res.partial + ' para revisar');
-  if (res.failed) parts.push(res.failed + ' con problemas');
-  notify('Terminado: ' + parts.join(', ') + '.', res.failed ? 'warn' : 'success');
+  if (res.waiting) parts.push(res.waiting + ' esperando a Adobe');
+  if (res.failed) parts.push(res.failed + ' con error');
+  // A login requested midway already has its own message on screen.
+  if (!afterLogin) notify('Terminado: ' + parts.join(', ') + '.', res.failed || res.waiting ? 'warn' : 'success');
+}
+
+// ── the Adobe session, asked for once ──
+// When there is no usable session, the action the editor asked for is kept,
+// the login window opens a single time, and the action runs by itself once
+// the login lands. Nothing fails row by row in the meantime.
+var afterLogin = null;
+var lastBatch = [];
+
+function askForLogin(resume, message) {
+  afterLogin = resume || null;
+  notify(message, 'warn');
+  openLogin();
+}
+
+function resumeAfterLogin() {
+  if (!afterLogin || busy || !session.hasToken()) return;
+  var resume = afterLogin;
+  afterLogin = null;
+  guarded(resume)();
+}
+
+// The queue calls this once per dead session, however many rows were in
+// flight when Adobe said no.
+function onSessionLost() {
+  session.clear();
+  askForLogin(runRows(lastBatch.slice()),
+    'Adobe pidió iniciar sesión de nuevo. Iniciá sesión y sigo solo con lo que quedó pendiente.');
 }
 
 // Everything that must be true before a single credit is spent: a token, and
 // an ffmpeg that can actually run the chain. Both are checked up front rather
 // than at the stage that needs them — finding out there is no usable ffmpeg
 // *after* uploading to Adobe wastes the credits.
-async function ensureReady() {
-  if (!session.hasToken()) {
-    notify('Conectate con Adobe primero.', 'error');
-    openLogin();
-    return false;
+async function ensureReady(resume) {
+  if (session.isExpired()) {
+    // A token that expired by its own clock can often be renewed without a
+    // window, while Adobe's session cookie is still alive. Only if that fails
+    // is the login opened.
+    var renewed = session.hasToken() && await session.trySilentReauth('antes de procesar');
+    if (!renewed) {
+      askForLogin(resume, 'Iniciá sesión en Adobe y arranco solo con lo que pediste.');
+      return false;
+    }
   }
   var limit = session.limitState();
   if (limit.limited) {
@@ -512,10 +621,16 @@ function wire() {
   $('activeBtn').addEventListener('click', guarded(function () { return runOne(0); }));
   $('inoutBtn').addEventListener('click', guarded(function () { return runOne(1); }));
   $('loadBtn').addEventListener('click', guarded(loadSequences));
-  $('runBtn').addEventListener('click', guarded(runPending));
-  $('clearDoneBtn').addEventListener('click', function () {
-    var n = queue.clearDone();
-    notify(n ? 'Quité ' + queueMod.plural(n, 'terminada') + '.' : 'No hay terminadas para quitar.', 'info');
+  $('runBtn').addEventListener('click', guarded(runFromToolbar));
+  $('retryBtn').addEventListener('click', function () {
+    var picked = selectionScope(queue.all()) || queue.all();
+    retryRows(picked.filter(function (i) { return queue.view(i).retry; }).map(function (i) { return i.id; }));
+  });
+  $('removeBtn').addEventListener('click', removeSelected);
+  $('selectAll').addEventListener('change', function () {
+    selected.clear();
+    if ($('selectAll').checked) queue.all().forEach(function (i) { selected.add(i.id); });
+    renderQueue(queue.all());
   });
   $('dlLogBtn').addEventListener('click', downloadLog);
   $('logoutBtn').addEventListener('click', function () {
@@ -538,11 +653,16 @@ function wire() {
     notify(res.verified ? 'Conectado (token verificado ✓).' : 'Conectado (no pude verificar, sin red).', 'success');
   });
 
-  // Retry lives on the row, so it is delegated rather than bound per render.
-  var retry = guarded(retryRow);
+  // Row controls are delegated rather than bound per render.
   $('queueList').addEventListener('click', function (ev) {
     var id = ev.target.getAttribute && ev.target.getAttribute('data-retry');
-    if (id) retry(id);
+    if (id) retryRows([id]);
+  });
+  $('queueList').addEventListener('change', function (ev) {
+    var id = ev.target.getAttribute && ev.target.getAttribute('data-select');
+    if (!id) return;
+    if (ev.target.checked) selected.add(id); else selected.delete(id);
+    renderToolbar(queue.all());
   });
 
   settingKeys().forEach(function (key) {
@@ -598,6 +718,7 @@ function wire() {
     getSettings: function () { return settings; },
     pipelineSettings: settingsMod.pipelineSettings,
     onChange: scheduleRender,
+    onSessionLost: onSessionLost,
     log: log,
     notify: notify,
   });
@@ -608,8 +729,9 @@ function wire() {
   if (devMode) $('updateBtn').setAttribute('data-tip', 'Modo dev: recarga el panel con los cambios del repo (host.jsx incluido).');
 
   session.listenForToken(function () {
-    notify('Conectado a Adobe.', 'success');
+    notify(afterLogin ? 'Conectado a Adobe — sigo con lo pendiente.' : 'Conectado a Adobe.', 'success');
     $('settingsPanel').hidden = true;
+    resumeAfterLogin();
   });
 
   // The previous update's log survives the reload that ended it, which is the

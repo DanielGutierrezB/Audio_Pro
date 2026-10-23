@@ -24,10 +24,15 @@
 // The state model has two rules:
 //
 //   1. `stage` is always the NEXT thing a row needs, never the last thing it
-//      did. A failure does not move it, it only sets `error`. So retrying and
-//      resuming are the same operation — run the row again and it picks up
-//      exactly where it stopped — and a row that failed after Adobe never pays
-//      Adobe twice.
+//      did. A failure does not move it, it only sets `error`, which parks the
+//      row: "Procesar" skips it until the editor presses "reintentar", which
+//      clears the error and nothing else. The next run then picks up exactly
+//      where it stopped, so a row that failed after Adobe never pays twice,
+//      and a row that keeps failing does not fail again on every Procesar.
+//
+//      Waiting on Adobe — an expired session or no credits left — is not a
+//      failure: nothing is wrong with the sequence. Those rows stay pending
+//      with a reason (`waiting`, never saved) and run on the next Procesar.
 //   2. Only facts are stored. What the row *says* is derived (view()) from the
 //      facts plus whether the row is running right now, which is not a fact
 //      about the row and is never saved. A restored row therefore cannot claim
@@ -232,6 +237,10 @@ function createQueue(deps) {
     onChange = () => {},
     log = () => {},
     notify = () => {},
+    // Called once when Adobe rejects the session and a silent refresh could
+    // not replace it, so the panel can ask for a login a single time instead
+    // of every row discovering it on its own.
+    onSessionLost = () => {},
     adobeConcurrency = 2,
   } = deps;
 
@@ -241,12 +250,20 @@ function createQueue(deps) {
   const children = new Map();   // pid -> { pid, host, cmd }
   const running = new Set();    // ids of rows in flight in this panel
   const progress = new Map();   // id -> { text, pct } while running
+  const waiting = new Map();    // id -> why the row is paused on Adobe
+  // The token Adobe rejected and a silent reauth could not replace. Rows that
+  // reach the Adobe stage while it is still the current token wait instead of
+  // asking; a login sets a different token and lifts it.
+  let deadToken = null;
+  let reauthInFlight = null;
 
   const premiereLane = createLane(1);
   const adobeLane = createLane(adobeConcurrency);
   const masterLane = createLane(1);
 
   const byId = (id) => items.find(i => i.id === String(id));
+  // What Procesar runs: not finished, not blocked, and not parked on an error.
+  const isPending = (i) => i.stage !== STAGE.DONE && !i.blocked && !i.error;
   const emit = () => onChange(items.slice());
 
   function save() {
@@ -287,6 +304,15 @@ function createQueue(deps) {
     return { ok: false, error: message };
   }
 
+  function park(item, reason) {
+    waiting.set(item.id, reason);
+    progress.delete(item.id);
+    emit();
+    save();
+    log('  ⏸ ' + reason);
+    return { ok: false, waiting: true };
+  }
+
   // What a row shows. Pure over the row and whether it is running, so the
   // list, the colours and the retry button can never disagree with each other.
   function view(item) {
@@ -295,6 +321,7 @@ function createQueue(deps) {
       return { text: p?.text || RUNNING_LABEL[item.stage], pct: p?.pct ?? 0, tone: 'work', retry: false };
     }
     if (item.error) return { text: item.error, pct: 0, tone: 'err', retry: !item.blocked };
+    if (waiting.has(item.id)) return { text: waiting.get(item.id), pct: 0, tone: 'wait', retry: false };
     switch (item.stage) {
       case STAGE.DONE:
         return {
@@ -342,7 +369,7 @@ function createQueue(deps) {
 
         items = migrate(raw);
         for (const item of items) item.stage = resumeStageFor(item);
-        const unfinished = items.filter(i => i.stage !== STAGE.PENDING && i.stage !== STAGE.DONE && !i.blocked).length;
+        const unfinished = items.filter(i => isPending(i) && i.stage !== STAGE.PENDING).length;
         log(`Cola del proyecto restaurada (${plural(items.length, 'secuencia')}).`);
         if (unfinished) notify(`${plural(unfinished, 'secuencia')} a medias — tocá Procesar para retomarlas.`, 'info');
       }
@@ -371,7 +398,11 @@ function createQueue(deps) {
     if (existing && running.has(existing.id)) return null;
     const resumable = existing && existing.workArea === kind && !existing.blocked
       && existing.stage !== STAGE.PENDING && existing.stage !== STAGE.DONE;
-    if (resumable) return existing;
+    if (resumable) {
+      // Pressing the button on this sequence is the explicit retry.
+      existing.error = null;
+      return existing;
+    }
 
     const fresh = toItem({ id: sequence.id, name: sequence.name, workArea: kind });
     if (existing) Object.assign(existing, fresh);
@@ -381,12 +412,34 @@ function createQueue(deps) {
     return existing || fresh;
   }
 
-  function clearDone() {
+  // Takes rows off the list. Their files stay where they are — this is the
+  // list, not the disk. Rows in flight are left alone and not counted.
+  function remove(ids) {
+    const drop = new Set(ids.map(String));
     const before = items.length;
-    items = items.filter(i => i.stage !== STAGE.DONE || running.has(i.id));
+    items = items.filter(i => !drop.has(i.id) || running.has(i.id));
+    for (const id of drop) {
+      if (!running.has(id)) { waiting.delete(id); progress.delete(id); }
+    }
     emit();
     save();
     return before - items.length;
+  }
+
+  // "Reintentar": puts failed rows back with the others, to be run by the next
+  // Procesar. Only the error goes; the stage — and everything already on disk —
+  // stays. Blocked rows are not retryable (re-running gives the same master).
+  function clearErrors(ids) {
+    const wanted = new Set(ids.map(String));
+    let cleared = 0;
+    for (const item of items) {
+      if (wanted.has(item.id) && item.error && !item.blocked && !running.has(item.id)) {
+        item.error = null;
+        cleared++;
+      }
+    }
+    if (cleared) { emit(); save(); }
+    return cleared;
   }
 
   const setCurrent = (proc, finished) => {
@@ -404,6 +457,7 @@ function createQueue(deps) {
     const from = ORDER.indexOf(item.stage);
     const needs = (stage) => from <= ORDER.indexOf(stage);
     item.error = null;
+    waiting.delete(item.id);
     emit();
 
     // ── 1. export ──
@@ -433,6 +487,7 @@ function createQueue(deps) {
     if (needs(STAGE.ENHANCING)) {
       setStage(item, STAGE.ENHANCING);
       const res = await adobeLane.run(() => runAdobe(item));
+      if (res.waiting) return park(item, res.waiting);
       if (!res.ok) return fail(item, res.error);
     }
 
@@ -532,27 +587,38 @@ function createQueue(deps) {
     return { ok: true };
   }
 
-  // Adobe is the one stage whose failures are worth reacting to rather than
-  // just reporting. The credits check runs inside the lane, so sequences that
-  // were already queued behind the one that hit the limit do not each go and
-  // get told no again.
+  // Adobe is the one stage whose failures are about the account rather than
+  // the sequence, so they pause the row instead of failing it, and they are
+  // handled once for the whole batch:
+  //
+  //   - No credits: the limit is checked inside the lane, so rows queued behind
+  //     the one that hit it never make the request.
+  //   - Session rejected (401): one silent refresh, shared by every row that
+  //     hits it at the same time. If that fails, the token is marked dead, the
+  //     panel is told once (it opens the login a single time), and every other
+  //     row waits instead of trying, failing and prompting on its own.
   async function runAdobe(item) {
-    const noCredits = 'sin créditos de Adobe — se retoma al volver a procesar';
-    if (session.limitState().limited) return { ok: false, error: noCredits };
+    const NO_CREDITS = 'esperando créditos de Adobe';
+    const NO_SESSION = 'esperando la sesión de Adobe';
+    if (session.limitState().limited) return { ok: false, waiting: NO_CREDITS };
+    // No token at all is the same wait: the panel drops the dead one when it
+    // asks for a login, possibly while other rows are still on their way here.
+    if (!session.getToken() || session.getToken() === deadToken) return { ok: false, waiting: NO_SESSION };
+
     const onStatus = (state, pct) => setProgress(item, `Adobe: ${state}${pct ? ' ' + pct + '%' : ''}`, pct);
+    // Always 100%: the dry/wet blend belongs to the core (a 200 Hz band
+    // split), so asking Adobe for less would blend the same two signals
+    // twice, two different ways.
+    const enhance = () => phonos.enhanceToFile(item.paths.original, item.paths.enhancedRaw, {
+      token: session.getToken(), cleanVoice: 100, onStatus,
+    });
     try {
-      // Always 100%: the dry/wet blend belongs to the core (a 200 Hz band
-      // split), so asking Adobe for less would blend the same two signals
-      // twice, two different ways.
-      const enhance = () => phonos.enhanceToFile(item.paths.original, item.paths.enhancedRaw, {
-        token: session.getToken(), cleanVoice: 100, onStatus,
-      });
       try {
         await enhance();
       } catch (err) {
         if (err.code !== 'AUTH') throw err;
         setProgress(item, 'reautenticando…');
-        if (!(await session.trySilentReauth('401 al procesar ' + item.name))) throw err;
+        if (!(await refreshSessionOnce(item))) return { ok: false, waiting: NO_SESSION };
         await enhance();
       }
       return { ok: true };
@@ -560,14 +626,36 @@ function createQueue(deps) {
       if (err.code === 'LIMIT') {
         session.armLimit(err.retrySeconds);
         notify('⏳ Sin créditos de Adobe — mirá el contador arriba.', 'warn');
-        return { ok: false, error: noCredits };
+        return { ok: false, waiting: NO_CREDITS };
       }
       if (err.code === 'AUTH') {
-        notify('Sesión de Adobe expirada — conectate de nuevo.', 'error');
-        return { ok: false, error: 'sesión de Adobe expirada' };
+        // Rejected even with the token the refresh just produced.
+        sessionLost(session.getToken());
+        return { ok: false, waiting: NO_SESSION };
       }
       return { ok: false, error: 'Adobe: ' + (err.message || String(err)) };
     }
+  }
+
+  function refreshSessionOnce(item) {
+    const token = session.getToken();
+    if (deadToken === token) return Promise.resolve(false);
+    if (!reauthInFlight) {
+      reauthInFlight = session.trySilentReauth('401 al procesar ' + item.name)
+        .then((fresh) => {
+          if (!fresh) sessionLost(token);
+          return !!fresh;
+        })
+        .finally(() => { reauthInFlight = null; });
+    }
+    return reauthInFlight;
+  }
+
+  function sessionLost(token) {
+    if (deadToken === token) return;
+    deadToken = token;
+    log('  ✗ Adobe rechazó la sesión y no se pudo renovar sola.');
+    onSessionLost();
   }
 
   // Runs `list` concurrently and lets the lanes decide what actually overlaps.
@@ -575,7 +663,7 @@ function createQueue(deps) {
   // on the UI to have disabled the right buttons in time: two runs of one row
   // would mean two exports and two Adobe uploads.
   async function run(list, { presetPath }) {
-    const targets = list.filter(i => i && i.stage !== STAGE.DONE && !i.blocked && !running.has(i.id));
+    const targets = list.filter(i => i && isPending(i) && !running.has(i.id));
     const results = await Promise.all(targets.map(async (item) => {
       running.add(item.id);
       log(`▶ ${item.name}${item.workArea ? ' [In→Out]' : ''}`);
@@ -592,7 +680,8 @@ function createQueue(deps) {
     return {
       done: results.filter(r => r.ok && !r.partial).length,
       partial: results.filter(r => r.partial).length,
-      failed: results.filter(r => !r.ok).length,
+      waiting: results.filter(r => r.waiting).length,
+      failed: results.filter(r => !r.ok && !r.waiting).length,
     };
   }
 
@@ -600,13 +689,14 @@ function createQueue(deps) {
     attach,
     addSequences,
     upsert,
-    clearDone,
+    remove,
+    clearErrors,
     run,
     view,
     all: () => items.slice(),
     get: byId,
     isRunning: () => running.size > 0,
-    pending: () => items.filter(i => i.stage !== STAGE.DONE && !i.blocked),
+    pending: () => items.filter(isPending),
   };
 }
 

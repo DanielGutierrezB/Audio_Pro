@@ -19,15 +19,29 @@ consistente sin que tengas que salir del programa:
 Si la masterización falla, el clip se queda en Mango: el audio de Adobe ya está
 en el timeline y nunca te quedás sin nada.
 
-Si algo falla a mitad de camino, la fila muestra el error y un botón
-**reintentar** que retoma exactamente desde la etapa que falló: nunca vuelve a
-exportar ni a pagarle a Adobe por una secuencia que ya volvió. Lo mismo pasa si
-cerrás el panel o Premiere se cae: al volver a abrirlo, **Procesar** retoma lo
-que quedó a medias, y **Secuencia activa** sobre una fila sin terminar la
-continúa en vez de empezarla de cero. La única excepción es un master que no se
-puede relinkear sin desincronizar o sin la voz de Adobe: ese no ofrece
-reintentar, porque repetirlo daría el mismo resultado; queda en Mango con el
-motivo a la vista.
+Si algo falla a mitad de camino, la fila queda en rojo con el error y
+**Procesar** la saltea, para no repetir el mismo fallo en cada corrida.
+**reintentar** (en la fila, o **↻ Reintentar** arriba para todas las que
+fallaron) solo la vuelve a poner en espera; el siguiente **Procesar** la retoma
+exactamente desde la etapa que falló, sin volver a exportar ni a pagarle a
+Adobe por una secuencia que ya volvió. Lo mismo pasa si cerrás el panel o
+Premiere se cae: al volver a abrirlo, **Procesar** retoma lo que quedó a
+medias, y **Secuencia activa** sobre una fila sin terminar la continúa en vez
+de empezarla de cero. La única excepción es un master que no se puede
+relinkear sin desincronizar o sin la voz de Adobe: ese no ofrece reintentar,
+porque repetirlo daría el mismo resultado; queda en Mango con el motivo a la
+vista.
+
+Con los checkboxes de la lista elegís filas: **Quitar** las saca de la lista
+(no borra archivos), y **Procesar** procesa solo las marcadas. Marcar todas y
+**Quitar** limpia la lista.
+
+**Sesión de Adobe.** Si no hay sesión, o venció, el panel la pide una sola vez
+antes de empezar y arranca solo cuando iniciás sesión. Si Adobe la rechaza a
+mitad de un lote, intenta renovarla en silencio una vez; si no puede, abre el
+login una vez, las demás filas quedan *esperando la sesión de Adobe* (no en
+error) y el lote sigue solo después del login. Lo mismo con los créditos: las
+filas quedan *esperando créditos* y se procesan cuando vuelvan.
 
 ## Instalación
 

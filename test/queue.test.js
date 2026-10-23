@@ -109,7 +109,8 @@ function harness(overrides = {}) {
 
   const limit = { limited: false, msRemaining: 0, reportedAt: 0 };
   const session = {
-    getToken: () => 'tok',
+    token: 'tok',
+    getToken: () => session.token,
     hasToken: () => true,
     limitState: () => limit,
     armLimit: (secs) => { calls.push({ name: 'armLimit', secs }); limit.limited = true; },
@@ -120,6 +121,7 @@ function harness(overrides = {}) {
   };
 
   const notes = [];
+  const lost = { count: 0 };
   const queue = queueMod.createQueue({
     host,
     phonos,
@@ -132,9 +134,10 @@ function harness(overrides = {}) {
     pipelineSettings: panelSettings.pipelineSettings,
     log: () => {},
     notify: (msg, type) => notes.push({ msg, type }),
+    onSessionLost: () => { lost.count++; },
   });
 
-  return { queue, calls, notes, names: () => calls.map(c => c.name), limit };
+  return { queue, calls, notes, names: () => calls.map(c => c.name), limit, session, lost };
 }
 
 test('the happy path runs every stage in order and ends on the master', async () => {
@@ -220,6 +223,7 @@ test('a failed master leaves the clip placed, and retrying re-runs only the mast
 
   overrides.masterFails = false;
   h.calls.length = 0;
+  h.queue.clearErrors([item.id]);
   const retry = await h.queue.run([item], PRESET);
   assert.equal(retry.done, 1);
   assert.deepEqual(h.names(), ['master', 'relink', 'rename']);
@@ -240,6 +244,7 @@ test('a failure after Adobe never pays Adobe twice', async () => {
 
   overrides.placeFails = false;
   h.calls.length = 0;
+  h.queue.clearErrors([item.id]);
   await h.queue.run(h.queue.pending(), PRESET);
   assert.deepEqual(h.names(), ['place', 'master', 'relink', 'rename'],
     'the retry starts at the stage that failed, with the Adobe return already on disk');
@@ -258,6 +263,7 @@ test('a failed relink retries the relink alone, not the master', async () => {
 
   overrides.relinkFails = false;
   h.calls.length = 0;
+  h.queue.clearErrors([item.id]);
   await h.queue.run([item], PRESET);
   assert.deepEqual(h.names(), ['relink', 'rename'], 'a finished master is not rendered again');
   assert.equal(item.stage, STAGE.DONE);
@@ -277,6 +283,7 @@ test('a clip removed while mastering is placed again on retry, without credits',
 
   overrides.relinkLost = false;
   h.calls.length = 0;
+  h.queue.clearErrors([item.id]);
   await h.queue.run([item], PRESET);
   assert.ok(!h.names().includes('adobe'));
   assert.equal(h.names()[0], 'place');
@@ -344,7 +351,7 @@ test('a pair that could not be aligned is placed but not mastered unattended', a
 
   assert.deepEqual(h.names(), ['export', 'adobe', 'align', 'place']);
   assert.equal(item.stage, STAGE.MASTERING, 'master is next, once the editor has looked');
-  assert.deepEqual(res, { done: 0, partial: 1, failed: 0 }, 'not counted as finished');
+  assert.deepEqual(res, { done: 0, partial: 1, waiting: 0, failed: 0 }, 'not counted as finished');
   assert.match(h.queue.view(item).text, /revisá el par/);
 
   // Running it again is how the editor says "it's fine, master it".
@@ -365,7 +372,7 @@ test('an export failure stops before a single credit is spent', async () => {
   assert.match(item.error, /preset/);
 });
 
-test('a credits limit keeps the row at the Adobe stage, and resuming does not re-export', async () => {
+test('a credits limit makes the row wait at the Adobe stage, and resuming does not re-export', async () => {
   const dir = tmpProject();
   const overrides = {
     projectDir: dir,
@@ -379,7 +386,10 @@ test('a credits limit keeps the row at the Adobe stage, and resuming does not re
 
   assert.ok(h.calls.some(c => c.name === 'armLimit' && c.secs === 90));
   assert.equal(item.stage, STAGE.ENHANCING);
-  assert.match(item.error, /créditos/);
+  // Nothing is wrong with the sequence: it waits, it does not fail.
+  assert.equal(item.error, null);
+  assert.match(h.queue.view(item).text, /esperando créditos/);
+  assert.equal(h.queue.pending().length, 1);
 
   // An hour later: the export is already on disk, so only Adobe onwards runs.
   h.limit.limited = false;
@@ -466,6 +476,7 @@ test('"Secuencia activa" on an unfinished row resumes it instead of starting ove
   const again = h.queue.upsert({ id: '1', name: 'clase' });
   assert.equal(again, item);
   assert.equal(again.stage, STAGE.MASTERING, 'not reset: the Adobe pass is already paid for');
+  assert.equal(again.error, null, 'pressing the button on it is the explicit retry');
 
   // Switching to In→Out is a different export, so that does start fresh.
   const inout = h.queue.upsert({ id: '1', name: 'clase' }, { workArea: 1 });
@@ -652,6 +663,114 @@ test('queue.json is replaced atomically, never written in place', async () => {
   const work = path.join(dir, 'Audio_Process');
   assert.ok(!fs.existsSync(path.join(work, 'queue.json.tmp')), 'the temp file is renamed over, not left behind');
   assert.doesNotThrow(() => JSON.parse(fs.readFileSync(path.join(work, 'queue.json'), 'utf8')));
+});
+
+test('a failed row is parked: Procesar skips it until "reintentar" puts it back', async () => {
+  const dir = tmpProject();
+  const overrides = { projectDir: dir, placeFails: true };
+  const h = harness(overrides);
+  h.queue.attach(dir);
+  const failed = h.queue.upsert({ id: '1', name: 'falla' });
+  await h.queue.run([failed], PRESET);
+  const other = h.queue.upsert({ id: '2', name: 'otra' });
+  overrides.placeFails = false;
+
+  // Procesar runs what is pending, and a row with an error is not: running it
+  // again on every Procesar would just fail again (or prompt again).
+  assert.deepEqual(h.queue.pending().map(i => i.id), ['2']);
+  h.calls.length = 0;
+  await h.queue.run([failed, other], PRESET);
+  assert.ok(h.calls.every(c => c.id !== '1' && !String(c.wavPath || c.outPath || '').includes('falla')),
+    'the parked row was not touched');
+  assert.equal(other.stage, STAGE.DONE);
+
+  // "reintentar" only clears the error — it does not run anything.
+  h.calls.length = 0;
+  assert.equal(h.queue.clearErrors(['1']), 1);
+  assert.deepEqual(h.calls, []);
+  assert.equal(failed.error, null);
+  assert.equal(failed.stage, STAGE.PLACING, 'the work already done is kept');
+  assert.equal(h.queue.view(failed).tone, 'idle');
+
+  await h.queue.run(h.queue.pending(), PRESET);
+  assert.equal(h.names()[0], 'place');
+  assert.equal(failed.stage, STAGE.DONE);
+});
+
+test('reintentar does not un-block a row whose master must not replace the clip', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir, mode: 1 });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  await h.queue.run([item], PRESET);
+  assert.equal(h.queue.clearErrors(['1']), 0);
+  assert.ok(item.error);
+});
+
+test('rows can be taken off the list; a running one stays until it finishes', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  h.queue.addSequences([{ id: '1', name: 'a' }, { id: '2', name: 'b' }, { id: '3', name: 'c' }]);
+  const busy = h.queue.run([h.queue.get('3')], PRESET);
+
+  assert.equal(h.queue.remove(['1', '3']), 1, 'only the idle one goes');
+  assert.deepEqual(h.queue.all().map(i => i.id), ['2', '3']);
+  await busy;
+
+  assert.equal(h.queue.remove(['2', '3']), 2);
+  assert.deepEqual(h.queue.all(), []);
+  const saved = JSON.parse(fs.readFileSync(path.join(dir, 'Audio_Process', 'queue.json'), 'utf8'));
+  assert.deepEqual(saved.items, [], 'the removal is saved');
+});
+
+test('an expired Adobe session is handled once per batch, not once per row', async () => {
+  const dir = tmpProject();
+  const overrides = {
+    projectDir: dir,
+    // Adobe rejects this token every time, and the silent refresh cannot fix it.
+    adobeError: () => (h.session.token === 'tok' ? Object.assign(new Error('401'), { code: 'AUTH' }) : undefined),
+  };
+  const h = harness(overrides);
+  h.queue.attach(dir);
+  const items = ['1', '2', '3', '4'].map(id => h.queue.upsert({ id, name: 'clase ' + id }));
+
+  const res = await h.queue.run(items, PRESET);
+
+  // One refresh attempt and one login request for the whole batch.
+  assert.equal(h.calls.filter(c => c.name === 'reauth').length, 1);
+  assert.equal(h.lost.count, 1);
+  // At most the rows already in the two Adobe slots asked; the rest waited.
+  assert.ok(h.calls.filter(c => c.name === 'adobe').length <= 2);
+  // None of them failed: they are waiting for the session, still pending.
+  assert.equal(res.failed, 0);
+  assert.equal(res.waiting, 4);
+  for (const item of items) {
+    assert.equal(item.error, null);
+    assert.match(h.queue.view(item).text, /esperando la sesión/);
+  }
+  assert.equal(h.queue.pending().length, 4);
+
+  // The login lands with a new token: the same rows pick up from Adobe on.
+  h.session.token = 'tok-nuevo';
+  h.calls.length = 0;
+  const after = await h.queue.run(h.queue.pending(), PRESET);
+  assert.equal(after.done, 4);
+  assert.ok(!h.names().includes('export'), 'the exports were already done');
+});
+
+test('rows reaching Adobe after the token was dropped wait instead of failing', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  h.session.token = null;   // the panel cleared the dead token to ask for a login
+
+  const res = await h.queue.run([item], PRESET);
+
+  assert.equal(res.waiting, 1);
+  assert.equal(item.error, null);
+  assert.ok(!h.names().includes('adobe'));
 });
 
 test('lanes bound how much runs at once, which is what keeps Premiere usable', async () => {
