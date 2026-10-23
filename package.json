@@ -1,6 +1,6 @@
 {
   "name": "audio-pro-premiere",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Panel CEP para Premiere Pro: exporta cada secuencia, la limpia con Adobe Podcast y la masteriza con el pipeline de AudioPro",
   "license": "MIT",
