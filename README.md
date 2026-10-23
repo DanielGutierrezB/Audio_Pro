@@ -32,6 +32,14 @@ relinkear sin desincronizar o sin la voz de Adobe: ese no ofrece reintentar,
 porque repetirlo daría el mismo resultado; queda en Mango con el motivo a la
 vista.
 
+**In → Out** es para parches: el pedazo que agregás al alargar un corte. Cada
+uno es una fila propia, con la región en el nombre
+(`clase_inout_7m39s-7m41s.wav`, y lo mismo en el bin), y se coloca en una
+pista nueva **arriba de todo** (A1) en el punto In; el panel avisa en qué pista
+quedó. Las marcas se leen al tocar el botón: si las movés mientras ese parche
+espera turno, te pide que vuelvas a tocar In → Out en vez de exportar otra
+región.
+
 Con los checkboxes de la lista elegís filas: **Quitar** las saca de la lista
 (no borra archivos), y **Procesar** procesa solo las marcadas. Marcar todas y
 **Quitar** limpia la lista.

@@ -283,7 +283,11 @@ function ppExportAudio(seqId, outPath, presetPath, workArea, wantIn, wantOut) {
 // label: etiqueta de color (default Mango). Devuelve `nodeId`, que es con lo
 // que ppRelinkMaster vuelve a encontrar este item sin depender del nombre ni
 // de la posición en el bin.
-function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label) {
+// placement: 'top' (parches de In→Out) = siempre una pista nueva arriba de
+// todo, en A1, donde el editor la ve sin buscar; cualquier otro valor (la clase
+// completa) = la primera pista vacía por encima del contenido, o una nueva al
+// final.
+function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placement) {
   try {
     var seq = _activate(seqId);
     if (!seq) return _json({ ok: false, error: 'Secuencia no encontrada' });
@@ -317,9 +321,25 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label) {
 
     var lastUsed = lastUsedIdx();
     dbg.push('tracksAntes=' + aT.numTracks + ' ultimoConClips=' + lastUsed);
+    var idx = -1;
 
-    // 1) ¿ya hay una pista vacía por encima del contenido? (A3 vacío) → usarla, sin tocar nada
-    var idx = firstEmptyAbove(lastUsed + 1);
+    if (String(placement) === 'top') {
+      // Un parche de In→Out en una pista al final quedaba debajo de todo, fuera
+      // de la vista, y parecía que no se había colocado. Va en una pista nueva
+      // insertada en la posición 0 (A1); las demás bajan un lugar.
+      var countTop = aT.numTracks;
+      try {
+        app.enableQE();
+        qe.project.getActiveSequence().addTracks(0, 0, 1, 0, 0, 0);   // 1 audio MONO en el índice 0
+        $.sleep(600);
+      } catch (eTop) { dbg.push('addTracks arriba err:' + eTop); }
+      dbg.push('addTracks ' + countTop + '->' + aT.numTracks + ' (mono,arriba)');
+      // Normalmente es la 0; si Premiere la puso en otro lado, la primera vacía.
+      idx = (aT.numTracks > countTop && aT[0].clips.numItems === 0) ? 0 : firstEmptyAbove(0);
+    } else {
+      // 1) ¿ya hay una pista vacía por encima del contenido? (A3 vacío) → usarla, sin tocar nada
+      idx = firstEmptyAbove(lastUsed + 1);
+    }
 
     // 2) si no, crear una MONO al final. Firma real:
     //    addTracks(nVideo, despVideo, nAudio, tipoCanal[0=mono,1=stereo,2=5.1], despAudio, nSubmix)

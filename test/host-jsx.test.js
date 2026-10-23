@@ -127,6 +127,14 @@ test('In→Out reports its marks, and refuses to export if they moved since the 
   assert.match(exp, /'INOUT_CHANGED'/);
 });
 
+test('an In→Out patch is placed on a new track inserted at the top', () => {
+  const body = source.slice(source.indexOf('function ppPlaceEnhanced'), source.indexOf('function ppRelinkMaster'));
+  assert.match(body, /function ppPlaceEnhanced\(seqId, wavPath, muteOthers, startSeconds, label, placement\)/);
+  assert.match(body, /String\(placement\) === 'top'/);
+  // Inserted at index 0 (A1), not appended at the end where it was out of view.
+  assert.match(body, /addTracks\(0, 0, 1, 0, 0, 0\)/);
+});
+
 test('the colour labels are the ones the queue and the installer talk about', () => {
   assert.match(source, /var LABEL_IN_PROGRESS = 7;/, 'Mango');
   assert.match(source, /var LABEL_DONE = 13;/, 'Verde');

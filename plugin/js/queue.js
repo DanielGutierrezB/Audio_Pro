@@ -588,6 +588,9 @@ function createQueue(deps) {
       if (!res.ok) return fail(item, res.error);
       item.nodeId = res.nodeId;
       log(`  · colocado en la pista A${res.track + 1} (nodeId ${res.nodeId})`);
+      if (item.region) {
+        notify(`${item.name}: parche ${stages.regionText(item.region)} colocado en la pista A${res.track + 1}.`, 'success');
+      }
 
       // A pair that could not be aligned with confidence is placed but not
       // mastered unattended: the two files may not be the same take, and the

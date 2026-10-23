@@ -48,8 +48,8 @@ function harness(overrides = {}) {
       writeSilentWav(outPath, overrides.exportedSeconds ?? 1);
       return { ok: true, outPath, inPoint: overrides.inPoint ?? 0, expectedSeconds: overrides.expectedSeconds ?? 1 };
     },
-    placeEnhanced: async (id, wavPath, mute, start, label) => {
-      calls.push({ name: 'place', id, wavPath, mute, start, label });
+    placeEnhanced: async (id, wavPath, mute, start, label, placement) => {
+      calls.push({ name: 'place', id, wavPath, mute, start, label, placement });
       if (overrides.placeFails) return { ok: false, error: 'no encontré pista vacía' };
       return { ok: true, nodeId: 'node-' + id, track: 2 };
     },
@@ -869,6 +869,22 @@ test('every In→Out is its own row, with its own name, next to the whole-class 
   assert.ok(binNames.includes('clase 01 · Audio Pro'));
   assert.ok(binNames.includes('clase 01_inout_9m48s-9m50s · Audio Pro'));
   assert.equal(queueMod.regionText(b.region), '9:48–9:50', 'the row says the same region as the file');
+});
+
+test('an In→Out patch goes on a new track at the top, and the panel says which', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  await h.queue.run([h.queue.upsert({ id: 'seq1', name: 'clase' })], PRESET);
+  const patch = h.queue.addInOut({ id: 'seq1', name: 'clase' }, { in: 80.6, out: 81.3 });
+  await h.queue.run([patch], PRESET);
+
+  const places = h.calls.filter(c => c.name === 'place');
+  // The whole class keeps its placement; the patch asks for the top. At the
+  // bottom, a one-second clip sat out of view and looked like it was missing.
+  assert.deepEqual(places.map(c => c.placement), ['auto', 'top']);
+  assert.ok(h.notes.some(n => n.msg === 'clase: parche 1:20–1:22 colocado en la pista A3.'),
+    h.notes.map(n => n.msg).join(' | '));
 });
 
 test('a reprocessed class gets a bin name of its own too', async () => {
