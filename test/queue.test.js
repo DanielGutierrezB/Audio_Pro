@@ -50,15 +50,19 @@ function harness(overrides = {}) {
       const inPoint = overrides.inPoint ?? (workArea === 1 && wantIn != null ? wantIn : 0);
       return { ok: true, outPath, inPoint, expectedSeconds: overrides.expectedSeconds ?? 1 };
     },
-    placeEnhanced: async (id, wavPath, mute, start, label, placement) => {
+    placeAudio: async (id, wavPath, mute, start, label, placement) => {
       calls.push({ name: 'place', id, wavPath, mute, start, label, placement });
       if (overrides.placeFails) return { ok: false, error: 'no encontré pista vacía' };
       return { ok: true, nodeId: 'node-' + id, track: 2, placedAt: Number(start) };
     },
+    // The same host call swaps the clip twice: to Adobe's return (Mango, 7)
+    // and to the master (green, 13). Recorded under two names so the order
+    // of the stages reads plainly in the tests.
     relinkMaster: async (nodeId, masterPath, label) => {
-      calls.push({ name: 'relink', nodeId, masterPath, label });
+      calls.push({ name: label === 7 ? 'swap' : 'relink', nodeId, masterPath, label });
       if (overrides.relinkLost) return { ok: false, error: 'NODE_NOT_FOUND' };
       if (overrides.relinkFails) return { ok: false, error: 'changeMediaPath falló' };
+      if (overrides.masterRelinkFails && label !== 7) return { ok: false, error: 'changeMediaPath falló' };
       return { ok: true, path: masterPath };
     },
     renameItem: async (nodeId, name) => { calls.push({ name: 'rename', nodeId, newName: name }); return { ok: true }; },
@@ -158,17 +162,24 @@ test('the happy path runs every stage in order and ends on the master', async ()
   const res = await queue.run([item], PRESET);
 
   assert.equal(res.done, 1);
-  assert.deepEqual(names(), ['export', 'adobe', 'align', 'place', 'master', 'relink', 'rename']);
+  // The export goes on the timeline first, and the clip is swapped twice:
+  // to Adobe's return, then to the master.
+  assert.deepEqual(names(), ['export', 'place', 'adobe', 'align', 'swap', 'rename', 'master', 'relink', 'rename']);
   assert.equal(item.stage, STAGE.DONE);
   assert.equal(item.nodeId, 'node-1');
   assert.equal(item.mode, 2);
   assert.equal(queue.view(item).text, '✓ master');
 
-  // The clip goes on the timeline in the in-progress colour and only turns to
-  // the done colour at the relink — that transition is the whole user-visible
-  // contract of the two-stage flow.
-  assert.equal(calls.find(c => c.name === 'place').label, 7);
-  assert.equal(calls.find(c => c.name === 'relink').label, 13);
+  // The export goes on with the colour Premiere gives any audio, turns Mango
+  // when it plays Adobe's return and green when it plays the master — the
+  // whole user-visible contract, and the timeline always on the latest file.
+  const place = calls.find(c => c.name === 'place');
+  assert.equal(place.label, 'none');
+  assert.equal(place.wavPath, item.paths.original);
+  const swaps = calls.filter(c => c.name === 'swap' || c.name === 'relink');
+  assert.deepEqual(swaps.map(c => [c.masterPath, c.label]), [[item.paths.enhanced, 7], [item.paths.master, 13]]);
+  assert.deepEqual(calls.filter(c => c.name === 'rename').map(c => c.newName),
+    ['clase 01 · Adobe Podcast', 'clase 01 · Audio Pro']);
   // Adobe is always asked for the pure clean voice; the blend belongs to the core.
   assert.equal(calls.find(c => c.name === 'adobe').cleanVoice, 100);
 });
@@ -245,27 +256,27 @@ test('a failed master leaves the clip placed, and retrying re-runs only the mast
 
 test('a failure after Adobe never pays Adobe twice', async () => {
   const dir = tmpProject();
-  const overrides = { projectDir: dir, placeFails: true };
+  const overrides = { projectDir: dir, relinkFails: true };
   const h = harness(overrides);
   h.queue.attach(dir);
   const item = h.queue.upsert({ id: '1', name: 'clase' });
 
   await h.queue.run([item], PRESET);
-  assert.equal(item.stage, STAGE.PLACING);
+  assert.equal(item.stage, STAGE.SWAPPING, 'stopped swapping the clip to Adobe\'s return');
   assert.ok(item.error);
 
-  overrides.placeFails = false;
+  overrides.relinkFails = false;
   h.calls.length = 0;
   h.queue.clearErrors([item.id]);
   await h.queue.run(h.queue.pending(), PRESET);
-  assert.deepEqual(h.names(), ['place', 'master', 'relink', 'rename'],
+  assert.deepEqual(h.names(), ['swap', 'rename', 'master', 'relink', 'rename'],
     'the retry starts at the stage that failed, with the Adobe return already on disk');
   assert.match(item.paths.original, /clase\.wav$/, 'and it did not become clase_2');
 });
 
 test('a failed relink retries the relink alone, not the master', async () => {
   const dir = tmpProject();
-  const overrides = { projectDir: dir, relinkFails: true };
+  const overrides = { projectDir: dir, masterRelinkFails: true };
   const h = harness(overrides);
   h.queue.attach(dir);
   const item = h.queue.upsert({ id: '1', name: 'clase' });
@@ -273,7 +284,7 @@ test('a failed relink retries the relink alone, not the master', async () => {
   await h.queue.run([item], PRESET);
   assert.equal(item.stage, STAGE.RELINKING);
 
-  overrides.relinkFails = false;
+  overrides.masterRelinkFails = false;
   h.calls.length = 0;
   h.queue.clearErrors([item.id]);
   await h.queue.run([item], PRESET);
@@ -361,15 +372,16 @@ test('a pair that could not be aligned is placed but not mastered unattended', a
 
   const res = await h.queue.run([item], PRESET);
 
-  assert.deepEqual(h.names(), ['export', 'adobe', 'align', 'place']);
-  assert.equal(item.stage, STAGE.MASTERING, 'master is next, once the editor has looked');
+  // The export is on the timeline; Adobe's return does not replace it.
+  assert.deepEqual(h.names(), ['export', 'place', 'adobe', 'align']);
+  assert.equal(item.stage, STAGE.SWAPPING, 'swapping is next, once the editor has looked');
   assert.deepEqual(res, { done: 0, partial: 1, waiting: 0, failed: 0 }, 'not counted as finished');
   assert.match(h.queue.view(item).text, /revisá el par/);
 
-  // Running it again is how the editor says "it's fine, master it".
+  // Running it again is how the editor says "it's fine, go ahead".
   h.calls.length = 0;
   await h.queue.run([item], PRESET);
-  assert.deepEqual(h.names(), ['master', 'relink', 'rename']);
+  assert.deepEqual(h.names(), ['swap', 'rename', 'master', 'relink', 'rename']);
 });
 
 test('an export failure stops before a single credit is spent', async () => {
@@ -443,7 +455,7 @@ test('a 401 is retried once behind a silent reauth', async () => {
   await h.queue.run([item], PRESET);
 
   assert.deepEqual(h.names(), [
-    'export', 'adobe', 'reauth', 'adobe', 'align', 'place', 'master', 'relink', 'rename',
+    'export', 'place', 'adobe', 'reauth', 'adobe', 'align', 'swap', 'rename', 'master', 'relink', 'rename',
   ]);
   assert.equal(item.stage, STAGE.DONE);
 });
@@ -565,7 +577,7 @@ test('the queue file survives a reload and resumes from the right stage', async 
 
   fresh.calls.length = 0;
   await fresh.queue.run(fresh.queue.pending(), PRESET);
-  assert.deepEqual(fresh.names(), ['master', 'relink', 'rename'], 'no export, and no credits spent again');
+  assert.deepEqual(fresh.names(), ['relink', 'rename'], 'no export, no credits, and the master on disk is not rendered again');
 });
 
 function writeQueue(dir, items) {
@@ -600,15 +612,19 @@ test('a resume falls back one stage at a time, never further than it has to', ()
   // The aligned file is gone but Adobe's raw return is not: that is a re-align
   // away from placing, not a re-export and a second Adobe bill.
   const ok = { exportVerified: true };
-  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.PLACING, paths: p }), STAGE.ALIGNING);
+  // No clip on the timeline yet: placing the export comes first.
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.PLACING, paths: p }), STAGE.PLACING);
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.ENHANCING, paths: p }), STAGE.PLACING);
+  // The aligned file is gone but Adobe's raw return is not: that is a re-align
+  // away from swapping, not a re-export and a second Adobe bill.
   assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.MASTERING, paths: p, nodeId: 'n' }), STAGE.ALIGNING);
   // Adobe's return landed before the panel died: skip straight past Adobe.
-  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.ENHANCING, paths: p }), STAGE.ALIGNING);
-  // A relink whose master is missing re-renders the master, given the clip.
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.ENHANCING, paths: p, nodeId: 'n' }), STAGE.ALIGNING);
+  // A clip that already landed is not placed a second time.
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.PLACING, paths: p, nodeId: 'n' }), STAGE.ALIGNING);
+  // A swap to the master whose master is missing re-renders it.
   touch(p.enhanced);
   assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.RELINKING, paths: p, nodeId: 'n', mode: 2 }), STAGE.MASTERING);
-  // A clip that already landed is not placed a second time.
-  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.PLACING, paths: p, nodeId: 'n' }), STAGE.MASTERING);
   // And none of it counts if the export was never checked complete.
   assert.equal(queueMod.resumeStageFor({ stage: STAGE.RELINKING, paths: p, nodeId: 'n', mode: 2 }), STAGE.PENDING);
 });
@@ -631,10 +647,12 @@ test('a resume that already has Adobe\'s return re-aligns instead of paying agai
 
   const h = harness({ projectDir: dir });
   const items = h.queue.attach(dir);
-  assert.equal(items[0].stage, STAGE.ALIGNING);
+  // The clip never made it to the timeline (no nodeId), so placing comes
+  // first; Adobe's return is on disk, so Adobe is skipped.
+  assert.equal(items[0].stage, STAGE.PLACING);
 
   await h.queue.run(h.queue.pending(), PRESET);
-  assert.deepEqual(h.names(), ['align', 'place', 'master', 'relink', 'rename']);
+  assert.deepEqual(h.names(), ['place', 'align', 'swap', 'rename', 'master', 'relink', 'rename']);
 });
 
 test('a v1 queue from the Adobe Podcast panel is migrated, not discarded', () => {
@@ -898,7 +916,7 @@ test('a reprocessed class gets a bin name of its own too', async () => {
   await h.queue.run([h.queue.upsert({ id: '1', name: 'clase' })], PRESET);
   await h.queue.run([h.queue.upsert({ id: '1', name: 'clase' })], PRESET);
   assert.deepEqual(h.calls.filter(c => c.name === 'rename').map(c => c.newName),
-    ['clase · Audio Pro', 'clase_2 · Audio Pro']);
+    ['clase · Adobe Podcast', 'clase · Audio Pro', 'clase_2 · Adobe Podcast', 'clase_2 · Audio Pro']);
 });
 
 test('an In→Out can run while the whole class is still running', async () => {
@@ -1049,6 +1067,69 @@ test('a fresh export never resumes an Adobe job from an earlier export', async (
   await h.queue.run([item], PRESET);
   const adobe = h.calls.find(c => c.name === 'adobe');
   assert.equal(adobe.resume, false, 'a new export is new audio: it needs a new job');
+});
+
+test('the export is on the timeline while Adobe is still working', async () => {
+  const dir = tmpProject();
+  const h = harness({
+    projectDir: dir,
+    adobeError: (opts) => {
+      opts.onTrack('job-1');
+      return Object.assign(new Error('lento'), { code: 'TIMEOUT', trackId: 'job-1' });
+    },
+  });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+
+  await h.queue.run([item], PRESET);
+
+  // Adobe has not answered, and the editor already has the clip to work with.
+  assert.deepEqual(h.names(), ['export', 'place', 'adobe']);
+  assert.equal(item.nodeId, 'node-1');
+  assert.equal(h.calls.find(c => c.name === 'place').wavPath, item.paths.original);
+  assert.ok(!h.names().includes('swap'), 'nothing replaced it yet');
+});
+
+test('a failed master leaves the clip playing Adobe\'s return, in Mango', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir, masterFails: true });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  await h.queue.run([item], PRESET);
+  const swap = h.calls.find(c => c.name === 'swap');
+  assert.deepEqual([swap.masterPath, swap.label], [item.paths.enhanced, 7]);
+  assert.ok(!h.names().includes('relink'));
+  assert.equal(item.stage, STAGE.MASTERING);
+});
+
+test('a clip deleted midway is placed again from the export, without Adobe or alignment again', async () => {
+  const dir = tmpProject();
+  const overrides = { projectDir: dir, relinkLost: true };
+  const h = harness(overrides);
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  await h.queue.run([item], PRESET);
+  assert.equal(item.stage, STAGE.PLACING);
+  assert.equal(item.nodeId, null);
+
+  overrides.relinkLost = false;
+  h.calls.length = 0;
+  h.queue.clearErrors([item.id]);
+  await h.queue.run([item], PRESET);
+  assert.deepEqual(h.names(), ['place', 'swap', 'rename', 'master', 'relink', 'rename'],
+    'the export goes back on, and the files already on disk are reused');
+  assert.equal(item.stage, STAGE.DONE);
+});
+
+test('an In→Out patch follows the same path: export at the In, then Adobe, then the master', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const patch = h.queue.addInOut({ id: 'seq1', name: 'clase' }, { in: 80.6, out: 81.3 });
+  await h.queue.run([patch], PRESET);
+  assert.deepEqual(h.names(), ['export', 'place', 'adobe', 'align', 'swap', 'rename', 'master', 'relink', 'rename']);
+  const place = h.calls.find(c => c.name === 'place');
+  assert.deepEqual([place.wavPath, place.start, place.placement], [patch.paths.original, '80.6', 'new']);
 });
 
 test('lanes bound how much runs at once, which is what keeps Premiere usable', async () => {

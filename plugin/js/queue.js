@@ -52,20 +52,25 @@ const { minutes } = require('./export-wait');
 
 const QUEUE_VERSION = 2;
 
+// The clip goes on the timeline right after the export and is then swapped
+// to each newer file as it lands — Adobe's return (Mango), the master (green).
+// The timeline therefore always holds the latest state, and a row that stops
+// anywhere leaves the editor with the best audio that was ready.
 const STAGE = {
   PENDING: 'pending',
   EXPORTING: 'exporting',
+  PLACING: 'placing',       // the export, as Premiere colours any audio
   ENHANCING: 'enhancing',
   ALIGNING: 'aligning',
-  PLACING: 'placing',
+  SWAPPING: 'swapping',     // clip → Adobe's aligned return, Mango
   MASTERING: 'mastering',
-  RELINKING: 'relinking',
+  RELINKING: 'relinking',   // clip → master, green
   DONE: 'done',
 };
 
 const ORDER = [
-  STAGE.PENDING, STAGE.EXPORTING, STAGE.ENHANCING, STAGE.ALIGNING,
-  STAGE.PLACING, STAGE.MASTERING, STAGE.RELINKING, STAGE.DONE,
+  STAGE.PENDING, STAGE.EXPORTING, STAGE.PLACING, STAGE.ENHANCING, STAGE.ALIGNING,
+  STAGE.SWAPPING, STAGE.MASTERING, STAGE.RELINKING, STAGE.DONE,
 ];
 
 // What a row says while that stage is running.
@@ -75,8 +80,9 @@ const RUNNING_LABEL = {
   [STAGE.ENHANCING]: 'limpiando (Adobe)…',
   [STAGE.ALIGNING]: 'alineando…',
   [STAGE.PLACING]: 'colocando…',
+  [STAGE.SWAPPING]: 'cambiando al audio de Adobe…',
   [STAGE.MASTERING]: 'masterizando…',
-  [STAGE.RELINKING]: 'relinkeando…',
+  [STAGE.RELINKING]: 'cambiando al master…',
   [STAGE.DONE]: '✓ master',
 };
 
@@ -158,20 +164,23 @@ function resumeStageFor(item) {
   const exported = () => has(p.original) && item.exportVerified === true;
   // Exporting needs nothing on disk, so a row that has to go back that far is
   // simply back to pending.
+  // From placing on, the clip has to be on the timeline (a nodeId).
+  const placed = () => exported() && !!item.nodeId;
   const ready = {
-    [STAGE.ENHANCING]: () => exported(),
-    [STAGE.ALIGNING]: () => exported() && has(p.enhancedRaw),
-    [STAGE.PLACING]: () => exported() && has(p.enhanced),
-    [STAGE.MASTERING]: () => exported() && has(p.enhanced) && !!item.nodeId,
-    [STAGE.RELINKING]: () => exported() && has(p.master) && !!item.nodeId && item.mode != null,
+    [STAGE.PLACING]: () => exported(),
+    [STAGE.ENHANCING]: () => placed(),
+    [STAGE.ALIGNING]: () => placed() && has(p.enhancedRaw),
+    [STAGE.SWAPPING]: () => placed() && has(p.enhanced),
+    [STAGE.MASTERING]: () => placed() && has(p.enhanced),
+    [STAGE.RELINKING]: () => placed() && has(p.master) && item.mode != null,
   };
 
   let stage = item.stage;
-  // Work that landed before the panel died moves the row forward: Adobe's
-  // return on disk means the credits were spent, and a nodeId means the clip
-  // is already on the timeline — placing it again would add a second copy.
+  // Work that landed before the panel died moves the row forward: a nodeId
+  // means the clip is already on the timeline — placing it again would add a
+  // second copy — and Adobe's return on disk means the credits were spent.
+  if (stage === STAGE.PLACING && item.nodeId) stage = STAGE.ENHANCING;
   if (stage === STAGE.ENHANCING && ready[STAGE.ALIGNING]()) stage = STAGE.ALIGNING;
-  if (stage === STAGE.PLACING && item.nodeId) stage = STAGE.MASTERING;
 
   for (let i = ORDER.indexOf(stage); i > ORDER.indexOf(STAGE.EXPORTING); i--) {
     if (ready[ORDER[i]]()) return ORDER[i];
@@ -288,6 +297,7 @@ function createQueue(deps) {
   const masterLane = createLane(1);
 
   const byId = (id) => items.find(i => i.id === String(id));
+  const has = (f) => !!f && fs.existsSync(f);
   // What Procesar runs: not finished, not blocked, and not parked on an error.
   const isPending = (i) => i.stage !== STAGE.DONE && !i.blocked && !i.error;
   const emit = () => onChange(items.slice());
@@ -330,6 +340,22 @@ function createQueue(deps) {
     return { ok: false, error: message };
   }
 
+  // A swap that did not happen leaves the clip on the last file that did.
+  // A clip the editor deleted or moved goes back to being placed — from the
+  // export, with the files already on disk skipped — and a deterministic block
+  // (sync, rejected pair) is marked so it is not offered as a retry.
+  function swapFailed(item, res) {
+    if (res.lost) {
+      item.nodeId = null;
+      item.stage = STAGE.PLACING;
+    }
+    if (res.blocked) {
+      item.blocked = res.blocked;
+      notify(`${item.name}: ${res.error}`, 'warn');
+    }
+    return fail(item, res.error);
+  }
+
   function park(item, reason) {
     waiting.set(item.id, reason);
     progress.delete(item.id);
@@ -356,7 +382,7 @@ function createQueue(deps) {
         };
       case STAGE.PENDING:
         return { text: 'en espera', pct: 0, tone: 'idle', retry: false };
-      case STAGE.MASTERING:
+      case STAGE.SWAPPING:
         if (item.alignNote === 'PAIR?') {
           return { text: 'colocado — revisá el par y tocá Procesar', pct: 0, tone: 'idle', retry: false };
         }
@@ -550,16 +576,40 @@ function createQueue(deps) {
       if (!res.verified) log('  · ⚠ Premiere no informó la duración de la secuencia; el export no se pudo comparar');
     }
 
-    // ── 2. Adobe ──
-    if (needs(STAGE.ENHANCING)) {
+    // ── 2. place the export ──
+    // On the timeline from the first minute, with the colour Premiere gives
+    // any audio; every later stage only swaps what this clip plays.
+    if (needs(STAGE.PLACING)) {
+      setStage(item, STAGE.PLACING);
+      const res = await premiereLane.run(() => stages.placeAudio({
+        host,
+        id: item.seqId,
+        wavPath: item.paths.original,
+        muteOthers: settings.muteOthers,
+        startSeconds: item.inPoint,
+        label: 'none',
+        workArea: item.workArea,
+      }));
+      if (res.debug) log('  · place: ' + res.debug.join(' | '));
+      if (!res.ok) return fail(item, res.error);
+      item.nodeId = res.nodeId;
+      log(`  · colocado en la pista A${res.track + 1} (nodeId ${res.nodeId})`);
+      if (item.region) {
+        const at = res.placedAt != null ? ` en ${stages.timecode(res.placedAt)}` : '';
+        notify(`${item.name}: parche ${stages.regionText(item.region)} colocado en la pista A${res.track + 1}${at}.`, 'success');
+      }
+    }
+
+    // ── 3. Adobe ── (skipped when its return is already on disk)
+    if (needs(STAGE.ENHANCING) && !has(item.paths.enhancedRaw)) {
       setStage(item, STAGE.ENHANCING);
       const res = await adobeLane.run(() => runAdobe(item));
       if (res.waiting) return park(item, res.waiting);
       if (!res.ok) return fail(item, res.error);
     }
 
-    // ── 3. align ──
-    if (needs(STAGE.ALIGNING)) {
+    // ── 4. align ── (skipped when the aligned file is already on disk)
+    if (needs(STAGE.ALIGNING) && !has(item.paths.enhanced)) {
       setStage(item, STAGE.ALIGNING);
       let res;
       try {
@@ -571,43 +621,34 @@ function createQueue(deps) {
       if (res.note === 'REALIGNED') {
         log(`  · Adobe venía ${res.shiftSec.toFixed(2)}s corrido (correlación ${res.correlation?.toFixed(2)}) — alineado al original`);
       } else if (res.note === 'PAIR?') {
-        log('  · ⚠ no pude confirmar que el par sea la misma toma — lo coloco igual, pero revisalo');
-        notify(`${item.name}: el audio de Adobe no se pudo alinear con confianza. Revisá antes de masterizar.`, 'warn');
-      }
-    }
-
-    // ── 4. place ──
-    if (needs(STAGE.PLACING)) {
-      setStage(item, STAGE.PLACING);
-      const res = await premiereLane.run(() => stages.placeEnhanced({
-        host,
-        id: item.seqId,
-        wavPath: item.paths.enhanced,
-        muteOthers: settings.muteOthers,
-        startSeconds: item.inPoint,
-        label: settings.labelInProgress,
-        workArea: item.workArea,
-      }));
-      if (res.debug) log('  · place: ' + res.debug.join(' | '));
-      if (!res.ok) return fail(item, res.error);
-      item.nodeId = res.nodeId;
-      log(`  · colocado en la pista A${res.track + 1} (nodeId ${res.nodeId})`);
-      if (item.region) {
-        const at = res.placedAt != null ? ` en ${stages.timecode(res.placedAt)}` : '';
-        notify(`${item.name}: parche ${stages.regionText(item.region)} colocado en la pista A${res.track + 1}${at}.`, 'success');
-      }
-
-      // A pair that could not be aligned with confidence is placed but not
-      // mastered unattended: the two files may not be the same take, and the
-      // editor should look first. Running the row again masters it.
-      if (item.alignNote === 'PAIR?') {
-        setStage(item, STAGE.MASTERING);
+        log('  · ⚠ no pude confirmar que el par sea la misma toma — dejo el original en la secuencia');
+        notify(`${item.name}: el audio de Adobe no se pudo alinear con confianza. Revisalo antes de seguir.`, 'warn');
+        // A pair that may not be the same take does not replace the clip on
+        // its own: the export stays on the timeline, which is always safe, and
+        // running the row again goes ahead once the editor has looked.
+        setStage(item, STAGE.SWAPPING);
         return { ok: true, partial: true };
       }
     }
 
-    // ── 5. master ──
-    if (needs(STAGE.MASTERING)) {
+    // ── 5. clip → Adobe's return, Mango ──
+    if (needs(STAGE.SWAPPING)) {
+      setStage(item, STAGE.SWAPPING);
+      const res = await premiereLane.run(() => stages.swapClip({
+        host,
+        aligner,
+        nodeId: item.nodeId,
+        originalPath: item.paths.original,
+        newPath: item.paths.enhanced,
+        label: settings.labelInProgress,
+        rename: `${item.stem} · Adobe Podcast`,
+      }));
+      if (!res.ok) return swapFailed(item, res);
+      log('  · el clip ahora suena con Adobe');
+    }
+
+    // ── 6. master ── (skipped when an earlier run already rendered it)
+    if (needs(STAGE.MASTERING) && !(has(item.paths.master) && item.mode != null)) {
       setStage(item, STAGE.MASTERING);
       const result = await masterLane.run(() => mastering.masterOne({
         originalPath: item.paths.original,
@@ -618,9 +659,8 @@ function createQueue(deps) {
         onNote: (msg) => log('  · ' + msg),
         setCurrent,
       }));
-      // A failed master leaves the clip in the in-progress colour with the
-      // Adobe voice already usable on the timeline: it costs the master, not
-      // the session.
+      // A failed master leaves the clip on Adobe's audio, in Mango, already
+      // usable: it costs the master, not the session.
       if (!result.ok) return fail(item, result.error);
       item.paths.master = result.outputPath;
       item.mode = result.mode;
@@ -628,7 +668,7 @@ function createQueue(deps) {
       log('  · ' + mastering.describeResult(result));
     }
 
-    // ── 6. relink ──
+    // ── 7. clip → master, green ──
     setStage(item, STAGE.RELINKING);
     const relink = await premiereLane.run(() => stages.relinkMaster({
       host,
@@ -643,19 +683,7 @@ function createQueue(deps) {
       // a class or a class and its In→Out patches.
       rename: `${item.stem} · Audio Pro`,
     }));
-    if (!relink.ok) {
-      if (relink.lost) {
-        // The editor deleted or moved the clip while it mastered. The aligned
-        // Adobe voice is still on disk, so retrying places it again — no credits.
-        item.nodeId = null;
-        item.stage = STAGE.PLACING;
-      }
-      if (relink.blocked) {
-        item.blocked = relink.blocked;
-        notify(`${item.name}: ${relink.error}`, 'warn');
-      }
-      return fail(item, relink.error);
-    }
+    if (!relink.ok) return swapFailed(item, relink);
 
     setStage(item, STAGE.DONE);
     return { ok: true };

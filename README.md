@@ -3,21 +3,26 @@
 Panel CEP que, dentro de Premiere, deja cada secuencia con un master de audio
 consistente sin que tengas que salir del programa:
 
-1. **Exporta** el audio de la secuencia a WAV 24 bit / mono / 48 kHz.
-2. Lo **limpia con Adobe Podcast Enhance** (siempre al 100%, sin mezcla local).
-3. **Alinea** el resultado al tiempo del original (Adobe recorta el silencio
+1. **Exporta** el audio de la secuencia a WAV 24 bit / mono / 48 kHz y lo
+   **coloca enseguida** en una pista nueva, con el color normal de audio: desde
+   el primer minuto tenés el clip para trabajar.
+2. Lo **limpia con Adobe Podcast Enhance** (siempre al 100%, sin mezcla local)
+   y **alinea** el resultado al tiempo del original (Adobe recorta el silencio
    inicial; esto lo devuelve a su lugar).
-4. **Coloca** esa voz limpia en una pista nueva, con el clip en **Mango**, así
-   podés seguir editando con audio escuchable de inmediato.
-5. **Masteriza en segundo plano** con el pipeline de
+3. **Reemplaza** el audio de ese mismo clip por el de Adobe y lo pasa a
+   **Mango**.
+4. **Masteriza en segundo plano** con el pipeline de
    [AudioPro](https://github.com/DanielGutierrezB/Audio_Education) (análisis,
    reparación condicional, corrección de tono adaptativa, de-esser, loudness),
    mientras vos seguís trabajando.
-6. **Relinkea** el clip al master y lo pasa a **Verde**. No cambia de secuencia
-   ni te roba el foco.
+5. **Reemplaza** otra vez el audio del clip, ahora por el master, y lo pasa a
+   **Verde**.
 
-Si la masterización falla, el clip se queda en Mango: el audio de Adobe ya está
-en el timeline y nunca te quedás sin nada.
+Cada reemplazo es sobre el mismo clip (no agrega nada al timeline), no cambia
+de secuencia y no te roba el foco. Así la secuencia siempre tiene el último
+estado: si algo se frena, el clip se queda con el último audio que estuvo
+listo — el original si Adobe no respondió, el de Adobe (Mango) si falló el
+master.
 
 Si algo falla a mitad de camino, la fila queda en rojo con el error y
 **Procesar** la saltea, para no repetir el mismo fallo en cada corrida.

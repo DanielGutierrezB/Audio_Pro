@@ -114,8 +114,8 @@ var host = {
     return callHost('ppExportAudio', [id, outPath, presetPath, workArea,
       wantIn == null ? '' : wantIn, wantOut == null ? '' : wantOut]);
   },
-  placeEnhanced: function (id, wavPath, muteOthers, startSeconds, label, placement) {
-    return callHost('ppPlaceEnhanced', [id, wavPath, muteOthers, startSeconds, label, placement || '']);
+  placeAudio: function (id, wavPath, muteOthers, startSeconds, label, placement) {
+    return callHost('ppPlaceAudio', [id, wavPath, muteOthers, startSeconds, label, placement || '']);
   },
   relinkMaster: function (nodeId, masterPath, label) {
     return callHost('ppRelinkMaster', [nodeId, masterPath, label]);

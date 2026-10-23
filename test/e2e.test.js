@@ -37,7 +37,7 @@ test('a sequence that starts in silence comes back mastered, in sync, and relink
       // What host.jsx reports: the end of the last clip on the timeline.
       return { ok: true, outPath, inPoint: 0, expectedSeconds: HEAD_SILENCE_SEC + 8 };
     },
-    placeEnhanced: async () => ({ ok: true, nodeId: 'node-1', track: 2 }),
+    placeAudio: async () => ({ ok: true, nodeId: 'node-1', track: 2 }),
     relinkMaster: async (nodeId, masterPath, label) => {
       relinks.push({ nodeId, masterPath, label });
       return { ok: true, path: masterPath };
@@ -86,8 +86,12 @@ test('a sequence that starts in silence comes back mastered, in sync, and relink
   const masterDur = await aligner.durationOf(item.paths.master);
   assert.ok(Math.abs(origDur - masterDur) < 0.05, `master ${masterDur}s vs original ${origDur}s`);
 
-  // The clip was relinked to that master, in the done colour.
-  assert.deepEqual(relinks, [{ nodeId: 'node-1', masterPath: item.paths.master, label: 13 }]);
+  // The clip went on as the export, was swapped to Adobe's aligned return
+  // (Mango), then to the master (green).
+  assert.deepEqual(relinks, [
+    { nodeId: 'node-1', masterPath: item.paths.enhanced, label: 7 },
+    { nodeId: 'node-1', masterPath: item.paths.master, label: 13 },
+  ]);
   assert.equal(item.paths.master, path.join(projectDir, 'Audio_Process', 'Audio_Pro', 'clase 01.wav'));
 
   // And the sidecar says how it was made.

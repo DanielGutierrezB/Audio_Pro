@@ -138,34 +138,65 @@ async function exportSequence({ host, id, outPath, presetPath, workArea, region,
   };
 }
 
-// ── 4. Place the clean voice on a new track ──
+// ── 2. Place the export on the timeline ──
+// The sequence's own export goes on the timeline as soon as it exists, with
+// the colour Premiere gives any audio, so the editor has the clip to work
+// with from the first minute. Later stages swap what the clip plays (see
+// swapClip) instead of placing anything else.
+//
 // In an In→Out run the other tracks are never muted: setMute silences a whole
 // track, which would kill the rest of the timeline outside the region. And the
 // patch always gets a brand-new track appended at the end (with A1–A3 in use,
 // A4), never a track that already existed.
-async function placeEnhanced({ host, id, wavPath, muteOthers, startSeconds, label, workArea }) {
+async function placeAudio({ host, id, wavPath, muteOthers, startSeconds, label, workArea }) {
   const effectiveMute = workArea ? 0 : (muteOthers ? 1 : 0);
   const placement = workArea ? 'new' : 'auto';
-  const res = await host.placeEnhanced(id, wavPath, effectiveMute, String(startSeconds ?? 0), label, placement);
+  const res = await host.placeAudio(id, wavPath, effectiveMute, String(startSeconds ?? 0), label ?? 'none', placement);
   if (!res.ok) return { ok: false, error: res.error, debug: res.debug };
   if (!res.nodeId) {
-    // Without a nodeId there is no way to find this item again, so the relink
-    // at the end would have nothing to point at. Better to say so now than to
-    // master for ten minutes and fail at the last step.
+    // Without a nodeId there is no way to find this item again, so every
+    // swap after this would have nothing to point at. Better to say so now
+    // than after Adobe and the master.
     return { ok: false, error: 'Premiere no devolvió el nodeId del clip', debug: res.debug };
   }
   return { ok: true, nodeId: res.nodeId, track: res.track, placedAt: res.placedAt ?? null, debug: res.debug };
 }
 
-// ── 6. Relink ──
-// Two gates before the clip is allowed to change:
+// ── Swapping what the placed clip plays ──
+// The clip placed at step 2 is re-pointed at each newer file — Adobe's
+// aligned return, then the master — with changeMediaPath, which updates it in
+// every sequence that uses it and never activates one. That is what lets the
+// editor keep working through the whole process, and what makes the timeline
+// always hold the latest state: if anything stops, the clip simply stays on
+// the last file that was ready.
 //
-//   mode 1 — the pair was rejected, so the master contains no Adobe pass at
-//            all. Replacing the clip with it would silently undo the
-//            enhancement the editor asked for (and paid credits for).
-//   drift  — the master should be exactly as long as the original. If it is
-//            not, something moved the audio, and relinking would put the
-//            sequence out of sync for the rest of its life.
+// One gate: the new file must be exactly as long as the export. Everything in
+// the chain is built to keep that true (alignment pads Adobe's return to the
+// export's span, nothing trims), so a mismatch means something moved the
+// audio, and swapping would put the sequence out of sync.
+async function swapClip({ host, aligner, nodeId, originalPath, newPath, label, rename }) {
+  const sync = await aligner.masterMatchesOriginal(originalPath, newPath);
+  if (!sync.ok) {
+    return { ok: false, blocked: 'SYNC', error: `sincronía: ${sync.reason} — no lo reemplazo`, drift: sync.drift };
+  }
+
+  const res = await host.relinkMaster(nodeId, newPath, label);
+  if (res.error === 'NODE_NOT_FOUND') {
+    return { ok: false, lost: true, error: 'el clip ya no está en el proyecto — reintentá para volver a colocarlo' };
+  }
+  if (!res.ok) return { ok: false, error: 'reemplazo: ' + res.error, debug: res.debug };
+
+  if (rename) {
+    // Cosmetic: makes the bin readable at a glance. Never a failure.
+    try { await host.renameItem(nodeId, rename); } catch { /* ignore */ }
+  }
+  return { ok: true, path: res.path, drift: sync.drift, debug: res.debug };
+}
+
+// ── 7. Swap to the master ──
+// On top of swapClip's sync gate: a master whose pair was rejected (mode 1)
+// contains no Adobe pass at all, so replacing the clip with it would silently
+// undo the enhancement the editor asked for (and paid credits for).
 //
 // A `warn` verify badge is NOT a gate: the loudness being a few tenths off is
 // worth saying on the row, not worth withholding a finished master.
@@ -177,28 +208,13 @@ async function relinkMaster({ host, aligner, nodeId, originalPath, masterPath, m
       error: 'el par con Adobe fue rechazado: el master no lleva la voz limpia, lo dejo sin relinkear',
     };
   }
-
-  const sync = await aligner.masterMatchesOriginal(originalPath, masterPath);
-  if (!sync.ok) {
-    return { ok: false, blocked: 'SYNC', error: `sincronía: ${sync.reason} — no relinkeo`, drift: sync.drift };
-  }
-
-  const res = await host.relinkMaster(nodeId, masterPath, label);
-  if (res.error === 'NODE_NOT_FOUND') {
-    return { ok: false, lost: true, error: 'el clip ya no está en el proyecto — reintentá para volver a colocarlo' };
-  }
-  if (!res.ok) return { ok: false, error: 'relink: ' + res.error, debug: res.debug };
-
-  if (rename) {
-    // Cosmetic: makes the bin readable at a glance. Never a failure.
-    try { await host.renameItem(nodeId, rename); } catch { /* ignore */ }
-  }
-  return { ok: true, path: res.path, drift: sync.drift, debug: res.debug };
+  return swapClip({ host, aligner, nodeId, originalPath, newPath: masterPath, label, rename });
 }
 
 module.exports = {
   exportSequence,
-  placeEnhanced,
+  placeAudio,
+  swapClip,
   relinkMaster,
   dirsFor,
   pathsFor,

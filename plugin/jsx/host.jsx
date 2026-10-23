@@ -5,8 +5,9 @@
 // export con espera de archivo, colocar en pista vacía) más lo que necesita
 // el flujo de dos etapas de este panel:
 //
-//   - ppPlaceEnhanced devuelve el nodeId del project item que importó, para
-//     que el panel pueda volver a encontrarlo cuando termine el master.
+//   - ppPlaceAudio coloca el export apenas existe y devuelve el nodeId del
+//     project item, para que el panel lo vaya reapuntando: al audio de Adobe
+//     cuando vuelve, y al master cuando termina.
 //   - ppRelinkMaster(nodeId, ...) reapunta ese item al master y le cambia el
 //     color SIN activar la secuencia: el master termina minutos después, con
 //     el editor trabajando en otra cosa, y robarle el foco en ese momento es
@@ -277,22 +278,24 @@ function ppExportAudio(seqId, outPath, presetPath, workArea, wantIn, wantOut) {
   } catch (e) { return _json({ ok: false, error: String(e), debug: dbg }); }
 }
 
-// ── Colocar el WAV limpio en una pista nueva + mutear el resto ──
+// ── Colocar un WAV en una pista nueva + mutear el resto ──
 // startSeconds: dónde arranca el clip (0 = inicio; para In→Out, el punto In,
 // así el audio limpio queda alineado con la parte que se procesó).
-// label: etiqueta de color (default Mango). Devuelve `nodeId`, que es con lo
+// label: etiqueta de color, o '' / 'none' para dejar la que Premiere le pone
+// a cualquier audio (así entra el export original). Devuelve `nodeId`, que es con lo
 // que ppRelinkMaster vuelve a encontrar este item sin depender del nombre ni
 // de la posición en el bin.
 // placement: 'new' (parches de In→Out) = siempre una pista nueva agregada al
 // final (con A1–A3 en uso, el parche va a A4), nunca una que ya existía;
 // cualquier otro valor (la clase completa) = la primera pista vacía por encima
 // del contenido, o una nueva al final.
-function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placement) {
+function ppPlaceAudio(seqId, wavPath, muteOthers, startSeconds, label, placement) {
   try {
     var seq = _activate(seqId);
     if (!seq) return _json({ ok: false, error: 'Secuencia no encontrada' });
     var startAt = (startSeconds == null || startSeconds === '') ? '0' : String(startSeconds);
-    var colorLabel = _labelOr(label, LABEL_IN_PROGRESS);
+    var keepLabel = (label == null || String(label) === '' || String(label) === 'none');
+    var colorLabel = keepLabel ? null : _labelOr(label, LABEL_IN_PROGRESS);
     // Todo llega por evalScript como string, y "0" es truthy: evaluar
     // `muteOthers` tal cual mutearía las demás pistas en un In→Out y dejaría
     // mudo todo el timeline fuera de la región.
@@ -365,7 +368,7 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placem
     var placed = _placeAt(track, item, parseFloat(startAt) || 0, dbg);
     if (!placed.ok) return _json({ ok: false, error: placed.error, debug: dbg });
 
-    try { item.setColorLabel(colorLabel); } catch (eCol) {}
+    if (colorLabel !== null) { try { item.setColorLabel(colorLabel); } catch (eCol) {} }
 
     if (mute) {
       for (var m = 0; m < aT.numTracks; m++) { try { aT[m].setMute(m === idx ? 0 : 1); } catch (e4) {} }

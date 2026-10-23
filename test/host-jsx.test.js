@@ -44,7 +44,7 @@ test('every entry point the panel calls exists', () => {
     'ppGetActiveSequence',
     'ppGetProjectDir',
     'ppExportAudio',
-    'ppPlaceEnhanced',
+    'ppPlaceAudio',
     'ppRelinkMaster',
     'ppRenameItem',
   ]) {
@@ -61,9 +61,9 @@ test('the relink path never activates a sequence', () => {
     'ppRelinkMaster/ppRenameItem must not steal the editor\'s focus');
 });
 
-test('ppPlaceEnhanced returns a nodeId, which is what the relink is addressed by', () => {
+test('ppPlaceAudio returns a nodeId, which is what the relink is addressed by', () => {
   const body = source.slice(
-    source.indexOf('function ppPlaceEnhanced'),
+    source.indexOf('function ppPlaceAudio'),
     source.indexOf('function ppRelinkMaster'),
   );
   assert.match(body, /nodeId/, 'without it the master has nothing to relink to');
@@ -77,7 +77,7 @@ test('"0" from evalScript does not mean "mute the other tracks"', () => {
   // the raw argument muted every other track on an In→Out run — the one case
   // the panel deliberately passes 0 — silencing the timeline outside the region.
   const body = source.slice(
-    source.indexOf('function ppPlaceEnhanced'),
+    source.indexOf('function ppPlaceAudio'),
     source.indexOf('function ppRelinkMaster'),
   );
   assert.match(body, /String\(muteOthers\) === '1'/);
@@ -89,7 +89,7 @@ test('the export does not wait inside ExtendScript, and reports how long it must
   // export: waiting there is what cut a batch of 100-minute classes to one
   // minute each. The wait lives in the panel (js/export-wait.js); host.jsx
   // starts the export and returns the duration the panel must see on disk.
-  const body = source.slice(source.indexOf('function ppExportAudio'), source.indexOf('function ppPlaceEnhanced'));
+  const body = source.slice(source.indexOf('function ppExportAudio'), source.indexOf('function ppPlaceAudio'));
   assert.doesNotMatch(body, /\$\.sleep\(/, 'no blocking wait around the export');
   assert.match(body, /expectedSeconds: expected/);
   assert.match(body, /\(wa === 1\) \? \(outSec - inSec\) : _seqContentEnd\(seq\)/);
@@ -122,14 +122,14 @@ test('the fallback JSON writer produces JSON the panel can parse', () => {
 test('In→Out reports its marks, and refuses to export if they moved since the click', () => {
   const active = source.slice(source.indexOf('function ppGetActiveSequence'), source.indexOf('function ppGetProjectDir'));
   assert.match(active, /inPoint: _seqInSeconds\(s\), outPoint: _seqOutSeconds\(s\)/);
-  const exp = source.slice(source.indexOf('function ppExportAudio'), source.indexOf('function ppPlaceEnhanced'));
+  const exp = source.slice(source.indexOf('function ppExportAudio'), source.indexOf('function ppPlaceAudio'));
   assert.match(exp, /function ppExportAudio\(seqId, outPath, presetPath, workArea, wantIn, wantOut\)/);
   assert.match(exp, /'INOUT_CHANGED'/);
 });
 
 test('an In→Out patch always gets a new track appended at the end', () => {
-  const body = source.slice(source.indexOf('function ppPlaceEnhanced'), source.indexOf('function ppRelinkMaster'));
-  assert.match(body, /function ppPlaceEnhanced\(seqId, wavPath, muteOthers, startSeconds, label, placement\)/);
+  const body = source.slice(source.indexOf('function ppPlaceAudio'), source.indexOf('function ppRelinkMaster'));
+  assert.match(body, /function ppPlaceAudio\(seqId, wavPath, muteOthers, startSeconds, label, placement\)/);
   assert.match(body, /String\(placement\) === 'new'/);
   // Appended after the last track (index = current count), and that new
   // track is the one used — never a track that already existed.
@@ -238,7 +238,7 @@ test('no track is added to a sequence other than the one being processed', () =>
   assert.ok(same._qeSequenceFor({ name: '02_clase' }, []));
 });
 
-// A sequence for ppPlaceEnhanced to work on: `used` tracks with clips, plus
+// A sequence for ppPlaceAudio to work on: `used` tracks with clips, plus
 // `empty` existing empty ones, and a QE that appends/inserts like Premiere.
 function mockSequence({ used, empty = 0 }) {
   const makeTrack = () => {
@@ -295,7 +295,7 @@ function mockSequence({ used, empty = 0 }) {
 test('an In→Out patch lands on a new track after the last one: A1–A3 in use → A4', () => {
   const { globals, tracks } = mockSequence({ used: 3 });
   const host = loadHost(globals);
-  const res = JSON.parse(host.ppPlaceEnhanced('s1', '/p/clase_inout.wav', '0', '80.6', '7', 'new'));
+  const res = JSON.parse(host.ppPlaceAudio('s1', '/p/clase_inout.wav', '0', '80.6', '7', 'new'));
   assert.equal(res.ok, true, res.error);
   assert.equal(res.track, 3, 'index 3 is A4');
   assert.equal(res.placedAt, 80.6);
@@ -307,7 +307,23 @@ test('an In→Out patch lands on a new track after the last one: A1–A3 in use 
 test('a patch never reuses a track that already existed, even an empty one', () => {
   const { globals, tracks } = mockSequence({ used: 2, empty: 1 });
   const host = loadHost(globals);
-  const res = JSON.parse(host.ppPlaceEnhanced('s1', '/p/clase_inout.wav', '0', '12', '7', 'new'));
+  const res = JSON.parse(host.ppPlaceAudio('s1', '/p/clase_inout.wav', '0', '12', '7', 'new'));
   assert.equal(res.track, 3, 'A3 was empty but already existed; the patch gets A4');
   assert.equal(tracks[2].clips.length, 0);
+});
+
+test('the export goes on with the colour Premiere gives any audio', () => {
+  const { globals } = mockSequence({ used: 1 });
+  const labels = [];
+  const importFiles = globals.app.project.importFiles;
+  globals.app.project.importFiles = (paths, ...rest) => {
+    importFiles(paths, ...rest);
+    const item = globals.app.project.rootItem.children[0].children.at(-1);
+    item.setColorLabel = (n) => labels.push(n);
+  };
+  const host = loadHost(globals);
+  const res = JSON.parse(host.ppPlaceAudio('s1', '/p/clase.wav', '0', '0', 'none', 'auto'));
+  assert.equal(res.ok, true, res.error);
+  assert.deepEqual(labels, [], 'no label set: it keeps the normal audio colour');
+  assert.equal(res.label, null);
 });
