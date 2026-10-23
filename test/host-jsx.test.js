@@ -154,3 +154,84 @@ test('the export preset cache is not shared with the other Adobe panel', () => {
   assert.match(source, /cached = base \+ '\/AudioPro_wav_preset\.epr'/);
   assert.doesNotMatch(source, /cached = base \+ '\/APEnhance/);
 });
+
+// ── host.jsx functions run for real, against a simulated Premiere ──
+// _placeAt and _qeSequenceFor are plain ES3; loading the whole file into a vm
+// with just the globals they touch lets the actual code run, rather than a
+// regex over it.
+const vm = require('vm');
+
+function loadHost(globals = {}) {
+  class Time { constructor() { this.seconds = 0; } }
+  const ctx = vm.createContext({ Time, ...globals });
+  vm.runInContext(source, ctx);
+  return ctx;
+}
+
+// A track whose overwriteClip reads the time the way `interpret` says.
+function mockTrack(interpret) {
+  const clips = [];
+  Object.defineProperty(clips, 'numItems', { get() { return this.length; } });
+  return {
+    clips,
+    overwriteClip(item, time) {
+      const clip = { projectItem: item, start: { seconds: interpret(time) } };
+      clip.remove = () => clips.splice(clips.indexOf(clip), 1);
+      clips.push(clip);
+    },
+  };
+}
+const TICKS = 254016000000;
+const item = { nodeId: 'n1' };
+
+test('_placeAt keeps the clip where it was asked for', () => {
+  const host = loadHost();
+  const track = mockTrack(t => (t && typeof t === 'object' ? t.seconds : Number(t)));
+  const dbg = [];
+  const res = host._placeAt(track, item, 80.6, dbg);
+  assert.equal(res.ok, true);
+  assert.equal(res.at, 80.6);
+  assert.equal(track.clips.length, 1);
+});
+
+test('_placeAt undoes a placement at the wrong time and tries another form', () => {
+  // A Premiere that ignores a Time object (puts it at 0) and reads strings as
+  // ticks — "80.6" ticks is 0 s, which is the patch-at-the-start bug.
+  const host = loadHost();
+  const track = mockTrack((t) => {
+    if (t && typeof t === 'object') return 0;
+    if (typeof t === 'string') return Number(t) / TICKS;
+    return t;
+  });
+  const dbg = [];
+  const res = host._placeAt(track, item, 80.6, dbg);
+  assert.equal(res.ok, true);
+  assert.equal(res.at, 80.6);
+  assert.equal(track.clips.length, 1, 'the misplaced attempt was removed');
+  assert.match(dbg.join(' | '), /overwrite\(Time\): pedido=80.6 quedó=0/);
+});
+
+test('_placeAt reports failure instead of leaving a clip in the wrong place', () => {
+  const host = loadHost();
+  const track = mockTrack(() => 0);
+  const res = host._placeAt(track, item, 80.6, []);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /no dejó el clip en 80.6/);
+  assert.equal(track.clips.length, 0, 'nothing is left at the start of the sequence');
+});
+
+test('no track is added to a sequence other than the one being processed', () => {
+  const host = loadHost({
+    app: { enableQE() {} },
+    qe: { project: { getActiveSequence: () => ({ name: 'otra secuencia', addTracks() { throw new Error('should not be called'); } }) } },
+  });
+  const dbg = [];
+  assert.equal(host._qeSequenceFor({ name: '02_clase' }, dbg), null);
+  assert.match(dbg.join(' '), /no agrego pista/);
+
+  const same = loadHost({
+    app: { enableQE() {} },
+    qe: { project: { getActiveSequence: () => ({ name: '02_clase' }) } },
+  });
+  assert.ok(same._qeSequenceFor({ name: '02_clase' }, []));
+});

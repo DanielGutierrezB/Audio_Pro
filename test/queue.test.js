@@ -46,12 +46,14 @@ function harness(overrides = {}) {
       await tick();
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       writeSilentWav(outPath, overrides.exportedSeconds ?? 1);
-      return { ok: true, outPath, inPoint: overrides.inPoint ?? 0, expectedSeconds: overrides.expectedSeconds ?? 1 };
+      // Like host.jsx: an In→Out export reports the In it exported from.
+      const inPoint = overrides.inPoint ?? (workArea === 1 && wantIn != null ? wantIn : 0);
+      return { ok: true, outPath, inPoint, expectedSeconds: overrides.expectedSeconds ?? 1 };
     },
     placeEnhanced: async (id, wavPath, mute, start, label, placement) => {
       calls.push({ name: 'place', id, wavPath, mute, start, label, placement });
       if (overrides.placeFails) return { ok: false, error: 'no encontré pista vacía' };
-      return { ok: true, nodeId: 'node-' + id, track: 2 };
+      return { ok: true, nodeId: 'node-' + id, track: 2, placedAt: Number(start) };
     },
     relinkMaster: async (nodeId, masterPath, label) => {
       calls.push({ name: 'relink', nodeId, masterPath, label });
@@ -883,7 +885,7 @@ test('an In→Out patch goes on a new track at the top, and the panel says which
   // The whole class keeps its placement; the patch asks for the top. At the
   // bottom, a one-second clip sat out of view and looked like it was missing.
   assert.deepEqual(places.map(c => c.placement), ['auto', 'top']);
-  assert.ok(h.notes.some(n => n.msg === 'clase: parche 1:20–1:22 colocado en la pista A3.'),
+  assert.ok(h.notes.some(n => n.msg === 'clase: parche 1:20–1:22 colocado en la pista A3 en 1:20.6.'),
     h.notes.map(n => n.msg).join(' | '));
 });
 

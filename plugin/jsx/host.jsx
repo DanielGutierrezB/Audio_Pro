@@ -329,9 +329,8 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placem
       // insertada en la posición 0 (A1); las demás bajan un lugar.
       var countTop = aT.numTracks;
       try {
-        app.enableQE();
-        qe.project.getActiveSequence().addTracks(0, 0, 1, 0, 0, 0);   // 1 audio MONO en el índice 0
-        $.sleep(600);
+        var qeTop = _qeSequenceFor(seq, dbg);
+        if (qeTop) { qeTop.addTracks(0, 0, 1, 0, 0, 0); $.sleep(600); }   // 1 audio MONO en el índice 0
       } catch (eTop) { dbg.push('addTracks arriba err:' + eTop); }
       dbg.push('addTracks ' + countTop + '->' + aT.numTracks + ' (mono,arriba)');
       // Normalmente es la 0; si Premiere la puso en otro lado, la primera vacía.
@@ -346,11 +345,12 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placem
     if (idx < 0) {
       var tracksBefore = aT.numTracks;
       try {
-        app.enableQE();
-        var qeSeq = qe.project.getActiveSequence();
-        try { qeSeq.addTracks(0, 0, 1, 0, tracksBefore, 0); }   // 1 audio MONO, después del último (append)
-        catch (e1) { try { qeSeq.addTracks(0, 0, 1, 0, tracksBefore); } catch (e2) { qeSeq.addTracks(0, 0, 1); } }
-        $.sleep(600);
+        var qeSeq = _qeSequenceFor(seq, dbg);
+        if (qeSeq) {
+          try { qeSeq.addTracks(0, 0, 1, 0, tracksBefore, 0); }   // 1 audio MONO, después del último (append)
+          catch (e1) { try { qeSeq.addTracks(0, 0, 1, 0, tracksBefore); } catch (e2) { qeSeq.addTracks(0, 0, 1); } }
+          $.sleep(600);
+        }
       } catch (eQE) { dbg.push('addTracks err:' + eQE); }
       dbg.push('addTracks ' + tracksBefore + '->' + aT.numTracks + ' (mono,append)');
       // la nueva pista vacía (preferir la de índice más alto = la del final)
@@ -361,9 +361,10 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placem
 
     var track = aT[idx];
     dbg.push('startAt=' + startAt);
-    // solo colocar en pista VACÍA (nunca pisar/correr contenido)
-    try { track.overwriteClip(item, startAt); }
-    catch (eOw) { return _json({ ok: false, error: 'overwrite: ' + eOw, debug: dbg }); }
+    // solo colocar en pista VACÍA (nunca pisar/correr contenido), y verificar
+    // que quedó en el punto pedido (ver _placeAt).
+    var placed = _placeAt(track, item, parseFloat(startAt) || 0, dbg);
+    if (!placed.ok) return _json({ ok: false, error: placed.error, debug: dbg });
 
     try { item.setColorLabel(colorLabel); } catch (eCol) {}
 
@@ -377,7 +378,7 @@ function ppPlaceEnhanced(seqId, wavPath, muteOthers, startSeconds, label, placem
     var nodeId = null;
     try { nodeId = String(item.nodeId); } catch (eNid) {}
     dbg.push('nodeId=' + nodeId);
-    return _json({ ok: true, track: idx, totalTracks: aT.numTracks, nodeId: nodeId, label: colorLabel, debug: dbg });
+    return _json({ ok: true, track: idx, totalTracks: aT.numTracks, nodeId: nodeId, label: colorLabel, placedAt: placed.at, debug: dbg });
   } catch (e) { return _json({ ok: false, error: String(e) }); }
 }
 
@@ -461,6 +462,60 @@ function _searchNode(root, target, depth) {
     }
   }
   return null;
+}
+
+// La secuencia de QE (la API interna, la única que agrega pistas) es la que
+// Premiere tiene al frente, no necesariamente `seq`: si el editor cambió de
+// pestaña en el medio, la pista nueva iría a otra secuencia. Solo se devuelve
+// si coincide; si no, no se agrega pista y el llamador cae al plan B.
+function _qeSequenceFor(seq, dbg) {
+  app.enableQE();
+  var q = qe.project.getActiveSequence();
+  if (!q) { dbg.push('QE: sin secuencia activa'); return null; }
+  if (String(q.name) !== String(seq.name)) {
+    dbg.push('QE activa="' + q.name + '" ≠ "' + seq.name + '" — no agrego pista');
+    return null;
+  }
+  return q;
+}
+
+// El clip que este project item tiene en `track` (el más reciente, si hay más).
+function _clipOf(track, item) {
+  var target = String(item.nodeId);
+  for (var c = track.clips.numItems - 1; c >= 0; c--) {
+    try { if (String(track.clips[c].projectItem.nodeId) === target) return track.clips[c]; } catch (e) {}
+  }
+  return null;
+}
+
+// Coloca `item` en `track` empezando en `sec`, y verifica dónde quedó.
+// overwriteClip acepta el tiempo de varias formas y según el caso Premiere lee
+// un string como segundos o como ticks (254016000000 por segundo): leído como
+// ticks, "80.6" es prácticamente 0 y el parche aparecía al inicio de la
+// secuencia en vez de en el punto In. Por eso no se confía en ninguna forma:
+// se prueba una, se lee el inicio real del clip, y si no coincide (a un frame)
+// se quita ese intento y se prueba la siguiente. Si ninguna queda bien, es un
+// error — nunca un parche colocado en otro lado dado por bueno.
+function _placeAt(track, item, sec, dbg) {
+  var FRAME_TOLERANCE = 0.05;
+  var forms = [
+    ['Time', function () { var t = new Time(); t.seconds = sec; return t; }],
+    ['segundos', function () { return sec; }],
+    ['ticks', function () { return String(Math.round(sec * TICKS_PER_SECOND)); }]
+  ];
+  for (var f = 0; f < forms.length; f++) {
+    try { track.overwriteClip(item, forms[f][1]()); }
+    catch (eOw) { dbg.push('overwrite(' + forms[f][0] + ') falló: ' + eOw); continue; }
+    var clip = _clipOf(track, item);
+    var at = null;
+    try { at = parseFloat(clip.start.seconds); } catch (eAt) {}
+    dbg.push('overwrite(' + forms[f][0] + '): pedido=' + sec + ' quedó=' + at);
+    if (clip && at !== null && !isNaN(at) && Math.abs(at - sec) <= FRAME_TOLERANCE) return { ok: true, at: at };
+    if (clip) {
+      try { clip.remove(false, false); } catch (eRm) { dbg.push('no pude quitar el intento mal colocado: ' + eRm); }
+    }
+  }
+  return { ok: false, error: 'Premiere no dejó el clip en ' + sec + ' s (ver log)' };
 }
 
 function _findChildByMediaPath(bin, fsName) {

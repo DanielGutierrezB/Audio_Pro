@@ -62,6 +62,15 @@ function regionStem(region) {
   return regionParts(region).map(([m, s]) => `${m}m${s}s`).join('-');
 }
 
+// "1:20.6" — a timeline position to the tenth, for telling the editor exactly
+// where something landed.
+function timecode(sec) {
+  const tenths = Math.round(Math.max(0, Number(sec) || 0) * 10);
+  const m = Math.floor(tenths / 600);
+  const s = (tenths % 600) / 10;
+  return `${m}:${s < 10 ? '0' : ''}${s.toFixed(1)}`;
+}
+
 // "7:39–7:41" — for the row.
 function regionText(region) {
   return regionParts(region).map(([m, s]) => `${m}:${s}`).join('–');
@@ -146,7 +155,7 @@ async function placeEnhanced({ host, id, wavPath, muteOthers, startSeconds, labe
     // master for ten minutes and fail at the last step.
     return { ok: false, error: 'Premiere no devolvió el nodeId del clip', debug: res.debug };
   }
-  return { ok: true, nodeId: res.nodeId, track: res.track, debug: res.debug };
+  return { ok: true, nodeId: res.nodeId, track: res.track, placedAt: res.placedAt ?? null, debug: res.debug };
 }
 
 // ── 6. Relink ──
@@ -197,6 +206,7 @@ module.exports = {
   nextStem,
   stemBase,
   regionText,
+  timecode,
   safeName,
   PATHS,
 };

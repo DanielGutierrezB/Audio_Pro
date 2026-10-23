@@ -589,7 +589,8 @@ function createQueue(deps) {
       item.nodeId = res.nodeId;
       log(`  · colocado en la pista A${res.track + 1} (nodeId ${res.nodeId})`);
       if (item.region) {
-        notify(`${item.name}: parche ${stages.regionText(item.region)} colocado en la pista A${res.track + 1}.`, 'success');
+        const at = res.placedAt != null ? ` en ${stages.timecode(res.placedAt)}` : '';
+        notify(`${item.name}: parche ${stages.regionText(item.region)} colocado en la pista A${res.track + 1}${at}.`, 'success');
       }
 
       // A pair that could not be aligned with confidence is placed but not
