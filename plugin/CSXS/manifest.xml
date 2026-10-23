@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ExtensionManifest Version="7.0" ExtensionBundleId="com.danielgutierrez.audiopro"
-    ExtensionBundleVersion="0.1.1" ExtensionBundleName="Audio Pro"
+    ExtensionBundleVersion="0.1.2" ExtensionBundleName="Audio Pro"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.danielgutierrez.audiopro.panel" Version="0.1.1"/>
-    <Extension Id="com.danielgutierrez.audiopro.login" Version="0.1.1"/>
+    <Extension Id="com.danielgutierrez.audiopro.panel" Version="0.1.2"/>
+    <Extension Id="com.danielgutierrez.audiopro.login" Version="0.1.2"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
