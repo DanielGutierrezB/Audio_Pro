@@ -16,6 +16,8 @@
 const path = require('path');
 const fs = require('fs');
 
+const exportWait = require('./export-wait');
+
 const PATHS = {
   work: 'Audio_Process',
   enhanced: 'Enhanced',
@@ -65,9 +67,14 @@ function nextStem(dirs, name, workArea) {
 }
 
 // ── 1. Export ──
-// Synchronous inside Premiere and it does activate the sequence, which is
-// unavoidable: exportAsMediaDirect renders the *active* sequence.
-async function exportSequence({ host, id, outPath, presetPath, workArea }) {
+// It activates the sequence, which is unavoidable: exportAsMediaDirect renders
+// the *active* one. host.jsx starts the export and returns at once with the
+// duration the result must have; this then waits — from Node, so Premiere's
+// main thread stays free to write — until the file really holds it (see
+// export-wait.js for why the old wait cut classes to a minute). The caller
+// runs this inside the Premiere lane, so nothing else talks to Premiere until
+// the export is whole.
+async function exportSequence({ host, id, outPath, presetPath, workArea, onProgress, pollMs, stallMs }) {
   const res = await host.exportAudio(id, outPath, presetPath, workArea ? 1 : 0);
   if (!res.ok) {
     const label = res.error === 'NO_PRESET' ? 'sin preset WAV'
@@ -75,9 +82,23 @@ async function exportSequence({ host, id, outPath, presetPath, workArea }) {
         : 'error al exportar';
     return { ok: false, error: label, raw: res.error, debug: res.debug };
   }
-  // Premiere may hand back a different extension than it was asked for, so the
-  // path it reports wins over the one we chose.
-  return { ok: true, outPath: res.outPath || outPath, inPoint: res.inPoint ?? 0, debug: res.debug };
+  const written = await exportWait.waitForExport({
+    requestedPath: res.outPath || outPath,
+    expectedSeconds: res.expectedSeconds,
+    onProgress,
+    pollMs,
+    stallMs,
+  });
+  if (!written.ok) return { ok: false, error: written.error, debug: res.debug };
+  return {
+    ok: true,
+    outPath: written.outPath,
+    inPoint: res.inPoint ?? 0,
+    expectedSeconds: res.expectedSeconds ?? null,
+    duration: written.duration,
+    verified: written.verified,
+    debug: res.debug,
+  };
 }
 
 // ── 4. Place the clean voice on a new track ──

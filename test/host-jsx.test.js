@@ -84,12 +84,16 @@ test('"0" from evalScript does not mean "mute the other tracks"', () => {
   assert.doesNotMatch(body, /if \(muteOthers\)/);
 });
 
-test('the export fallback only accepts this run\'s file, not an earlier run with the same prefix', () => {
-  // "clase" must not match "clase_2.wav" or "clase_inout.wav" left by another
-  // run: that would send stale audio to Adobe and report success.
-  const body = source.slice(source.indexOf('function _findExported'), source.indexOf('function _seqInSeconds'));
-  assert.match(body, /var prefix = stem \+ '\.';/);
-  assert.match(body, /indexOf\(prefix\) === 0/);
+test('the export does not wait inside ExtendScript, and reports how long it must be', () => {
+  // $.sleep blocks Premiere's main thread, which is the thread writing the
+  // export: waiting there is what cut a batch of 100-minute classes to one
+  // minute each. The wait lives in the panel (js/export-wait.js); host.jsx
+  // starts the export and returns the duration the panel must see on disk.
+  const body = source.slice(source.indexOf('function ppExportAudio'), source.indexOf('function ppPlaceEnhanced'));
+  assert.doesNotMatch(body, /\$\.sleep\(/, 'no blocking wait around the export');
+  assert.match(body, /expectedSeconds: expected/);
+  assert.match(body, /\(wa === 1\) \? \(outSec - inSec\) : _seqContentEnd\(seq\)/);
+  assert.match(source, /function _seqContentEnd\(seq\)/);
 });
 
 test('the fallback JSON writer produces JSON the panel can parse', () => {

@@ -48,6 +48,7 @@ const os = require('os');
 const { execFileSync } = require('child_process');
 
 const stages = require('./stages');
+const { minutes } = require('./export-wait');
 
 const QUEUE_VERSION = 2;
 
@@ -94,6 +95,12 @@ const ITEM_DEFAULTS = {
   paths: null,
   nodeId: null,
   inPoint: 0,
+  // How long the export had to be, and whether the file on disk was checked to
+  // hold all of it. Nothing downstream of an unverified export is trusted:
+  // queue.json written before this check existed carries exports that were cut
+  // to a minute, and those rows go back to exporting rather than to Adobe.
+  expectedSeconds: null,
+  exportVerified: false,
   // What alignment found: null, 'REALIGNED', 'PADDED' or 'PAIR?'.
   alignNote: null,
   // Why a finished master must not replace the clip: 'PAIR_MISMATCH' or
@@ -134,14 +141,17 @@ function resumeStageFor(item) {
   if (item.stage === STAGE.DONE) return STAGE.DONE;
   const p = item.paths || {};
   const has = (f) => !!f && fs.existsSync(f);
+  // Every later stage is built on the export, so it has to be there and to
+  // have been checked complete.
+  const exported = () => has(p.original) && item.exportVerified === true;
   // Exporting needs nothing on disk, so a row that has to go back that far is
   // simply back to pending.
   const ready = {
-    [STAGE.ENHANCING]: () => has(p.original),
-    [STAGE.ALIGNING]: () => has(p.original) && has(p.enhancedRaw),
-    [STAGE.PLACING]: () => has(p.original) && has(p.enhanced),
-    [STAGE.MASTERING]: () => has(p.original) && has(p.enhanced) && !!item.nodeId,
-    [STAGE.RELINKING]: () => has(p.original) && has(p.master) && !!item.nodeId && item.mode != null,
+    [STAGE.ENHANCING]: () => exported(),
+    [STAGE.ALIGNING]: () => exported() && has(p.enhancedRaw),
+    [STAGE.PLACING]: () => exported() && has(p.enhanced),
+    [STAGE.MASTERING]: () => exported() && has(p.enhanced) && !!item.nodeId,
+    [STAGE.RELINKING]: () => exported() && has(p.master) && !!item.nodeId && item.mode != null,
   };
 
   let stage = item.stage;
@@ -242,6 +252,10 @@ function createQueue(deps) {
     // of every row discovering it on its own.
     onSessionLost = () => {},
     adobeConcurrency = 2,
+    // How often to look at an export being written, and how long it may sit
+    // without growing before it counts as stuck (see export-wait.js).
+    exportPollMs = 1000,
+    exportStallMs,
   } = deps;
 
   let items = [];
@@ -368,7 +382,13 @@ function createQueue(deps) {
         if (killed) notify(`Limpié ${plural(killed, 'proceso')} de ffmpeg que quedó colgado.`, 'info');
 
         items = migrate(raw);
-        for (const item of items) item.stage = resumeStageFor(item);
+        for (const item of items) {
+          const next = resumeStageFor(item);
+          // A row sent all the way back to exporting starts over, and the
+          // error it carried was about a stage it will now redo from scratch.
+          if (next === STAGE.PENDING && item.stage !== STAGE.PENDING && !item.blocked) item.error = null;
+          item.stage = next;
+        }
         const unfinished = items.filter(i => isPending(i) && i.stage !== STAGE.PENDING).length;
         log(`Cola del proyecto restaurada (${plural(items.length, 'secuencia')}).`);
         if (unfinished) notify(`${plural(unfinished, 'secuencia')} a medias — tocá Procesar para retomarlas.`, 'info');
@@ -454,6 +474,10 @@ function createQueue(deps) {
   // read it top to bottom.
   async function runItem(item, { presetPath }) {
     const settings = getSettings();
+    // The row's stage is re-checked against the disk before every run, not
+    // only when queue.json is loaded: a file deleted since, or an export that
+    // was never verified, sends it back as far as it needs to go.
+    item.stage = resumeStageFor(item);
     const from = ORDER.indexOf(item.stage);
     const needs = (stage) => from <= ORDER.indexOf(stage);
     item.error = null;
@@ -465,6 +489,9 @@ function createQueue(deps) {
     // finished writing: two sequences with the same name would otherwise both
     // see a free `clase.wav` and export over each other.
     if (needs(STAGE.EXPORTING)) {
+      // A fresh export: whatever a previous attempt left on this row (a clip
+      // placed from a cut-short export, a master of it) belongs to that attempt.
+      Object.assign(item, { nodeId: null, alignNote: null, mode: null, verify: null, exportVerified: false });
       setStage(item, STAGE.EXPORTING);
       const res = await premiereLane.run(async () => {
         const { stem, runIndex } = stages.nextStem(dirs, item.name, item.workArea);
@@ -473,14 +500,25 @@ function createQueue(deps) {
         item.paths = stages.pathsFor(dirs, stem);
         if (runIndex > 1) log(`  · reproceso #${runIndex}: escribo en ${stem}.wav (no piso el anterior)`);
         return stages.exportSequence({
-          host, id: item.id, outPath: item.paths.original, presetPath, workArea: item.workArea,
+          host,
+          id: item.id,
+          outPath: item.paths.original,
+          presetPath,
+          workArea: item.workArea,
+          pollMs: exportPollMs,
+          stallMs: exportStallMs,
+          onProgress: (done, total) => setProgress(item,
+            `exportando… ${minutes(done)} de ${minutes(total)}`, (100 * done) / total),
         });
       });
       if (res.debug) log('  · export: ' + res.debug.join(' | '));
       if (!res.ok) return fail(item, res.error);
       item.paths.original = res.outPath;
       item.inPoint = res.inPoint;
-      log(`  · exportado: ${res.outPath}`);
+      item.expectedSeconds = res.expectedSeconds;
+      item.exportVerified = true;
+      log(`  · exportado completo: ${minutes(res.duration)} → ${res.outPath}`);
+      if (!res.verified) log('  · ⚠ Premiere no informó la duración de la secuencia; el export no se pudo comparar');
     }
 
     // ── 2. Adobe ──

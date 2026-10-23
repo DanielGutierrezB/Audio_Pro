@@ -34,7 +34,8 @@ test('a sequence that starts in silence comes back mastered, in sync, and relink
   const host = {
     exportAudio: async (id, outPath) => {
       await buildSpeechLike(outPath, { silenceHead: HEAD_SILENCE_SEC, duration: 8 });
-      return { ok: true, outPath, inPoint: 0 };
+      // What host.jsx reports: the end of the last clip on the timeline.
+      return { ok: true, outPath, inPoint: 0, expectedSeconds: HEAD_SILENCE_SEC + 8 };
     },
     placeEnhanced: async () => ({ ok: true, nodeId: 'node-1', track: 2 }),
     relinkMaster: async (nodeId, masterPath, label) => {
@@ -64,6 +65,7 @@ test('a sequence that starts in silence comes back mastered, in sync, and relink
     host, phonos, aligner, mastering, session,
     getSettings: () => panelSettings.defaults(),
     pipelineSettings: panelSettings.pipelineSettings,
+    exportPollMs: 10,
   });
   queue.attach(projectDir);
   const item = queue.upsert({ id: '1', name: 'clase 01' });
@@ -73,6 +75,7 @@ test('a sequence that starts in silence comes back mastered, in sync, and relink
   assert.equal(res.done, 1, item.error || 'the row failed');
   assert.equal(item.stage, queueMod.STAGE.DONE);
   assert.equal(item.alignNote, 'REALIGNED', 'Adobe\'s trimmed head was put back');
+  assert.equal(item.exportVerified, true, 'the export was checked against the sequence length');
 
   // Mode 2 means the Adobe pass actually went into the master.
   assert.equal(item.mode, 2);

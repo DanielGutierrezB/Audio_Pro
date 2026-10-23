@@ -166,23 +166,33 @@ function _findOrCreatePreset() {
   return null;
 }
 
-// Busca en `dir` el export de `stem` tolerando que Premiere agregue o cambie
-// la extensión (p.ej. deje "x.wav.wav" o "x.aif"). Solo acepta `stem` seguido
-// de un punto: un prefijo suelto haría que "clase" encontrara "clase_2.wav" o
-// "clase_inout.wav" de una corrida anterior y lo diera por bueno.
-// Devuelve el File más pesado (el export real, no un sidecar vacío) o null.
-function _findExported(dir, stem) {
-  try {
-    var fold = new Folder(dir);
-    if (!fold.exists) return null;
-    var prefix = stem + '.';
-    var all = fold.getFiles(function (f) { return (f instanceof File) && f.name.indexOf(prefix) === 0; });
-    var best = null;
-    for (var i = 0; i < all.length; i++) {
-      if (all[i].length > 0 && (!best || all[i].length > best.length)) best = all[i];
+// Cuánto dura la secuencia entera: el final del último clip, en video o en
+// audio, que es hasta donde llega un export completo. Es contra este número
+// que el panel verifica el export (un export cortado a mitad no se manda a
+// Adobe). Si no se pudiera recorrer, cae a `seq.end` (ticks).
+var TICKS_PER_SECOND = 254016000000;
+function _seqContentEnd(seq) {
+  var end = 0;
+  function scan(tracks) {
+    if (!tracks) return;
+    for (var t = 0; t < tracks.numTracks; t++) {
+      var clips = tracks[t].clips;
+      for (var c = 0; c < clips.numItems; c++) {
+        try {
+          var clipEnd = parseFloat(clips[c].end.seconds);
+          if (clipEnd > end) end = clipEnd;
+        } catch (eClip) {}
+      }
     }
-    return best;
-  } catch (e) { return null; }
+  }
+  try { scan(seq.videoTracks); } catch (eV) {}
+  try { scan(seq.audioTracks); } catch (eA) {}
+  if (end > 0) return end;
+  try {
+    var ticks = parseFloat(seq.end);
+    if (ticks > 0) return ticks / TICKS_PER_SECOND;
+  } catch (eT) {}
+  return null;
 }
 
 // Punto In/Out de la secuencia en segundos (tolera APIs viejas/nuevas).
@@ -207,10 +217,10 @@ function ppExportAudio(seqId, outPath, presetPath, workArea) {
     var seq = _activate(seqId);
     if (!seq) return _json({ ok: false, error: 'Secuencia no encontrada' });
     var wa = (String(workArea) === '1') ? 1 : 0;
-    var inSec = 0;
+    var inSec = 0, outSec = 0;
     if (wa === 1) {
       inSec = _seqInSeconds(seq);
-      var outSec = _seqOutSeconds(seq);
+      outSec = _seqOutSeconds(seq);
       dbg.push('inOut=' + inSec + '..' + outSec);
       if (!(outSec > inSec)) return _json({ ok: false, error: 'NO_INOUT', debug: dbg });
     }
@@ -225,31 +235,33 @@ function ppExportAudio(seqId, outPath, presetPath, workArea) {
     var stem = outFile.name.replace(/\.wav$/i, '');
     if (outFile.exists) { try { outFile.remove(); } catch (eR) {} }
 
+    var expected = (wa === 1) ? (outSec - inSec) : _seqContentEnd(seq);
+    dbg.push('duracionEsperada=' + expected);
+
+    // Se lanza el export y se devuelve el control enseguida, sin esperar acá.
+    // Esperar con $.sleep en ExtendScript bloquea el hilo principal de
+    // Premiere, que es el mismo que escribe el export: el archivo dejaba de
+    // crecer porque lo estábamos frenando nosotros, se daba por terminado, y la
+    // siguiente llamada a Premiere lo cortaba a mitad. Clases de 100 minutos
+    // salían de uno. El panel espera desde Node (sin bloquear a nadie) hasta
+    // que el archivo llegue a `expectedSeconds`, y no le habla a Premiere de
+    // otra cosa mientras tanto.
+    var t0 = new Date().getTime();
     var ret;
     try { ret = app.project.activeSequence.exportAsMediaDirect(outPath, preset, wa); } // 0 = entera, 1 = In→Out
     catch (eEx) { return _json({ ok: false, error: 'exportAsMediaDirect: ' + eEx, debug: dbg }); }
-    dbg.push('ret=' + ret + ' wa=' + wa);
-
-    // En Windows exportAsMediaDirect puede devolver ANTES de terminar de
-    // escribir el archivo (o escribirlo con otra extensión). Esperamos a que
-    // aparezca (hasta ~60s) y luego a que el tamaño se estabilice.
-    var found = null, waited = 0;
-    while (waited < 120) {
-      found = outFile.exists ? outFile : _findExported(dir, stem);
-      if (found && found.length > 0) break;
-      $.sleep(500); waited++;
-    }
-    if (!found || found.length === 0) return _json({ ok: false, error: 'La exportación no generó archivo', debug: dbg });
-
-    var prev = -1, same = 0;
-    while (same < 4 && waited < 180) {
-      var cur = new File(found.fsName).length;
-      if (cur > 0 && cur === prev) same++; else { same = 0; prev = cur; }
-      if (same >= 4) break;
-      $.sleep(500); waited++;
-    }
-    dbg.push('archivo=' + found.name + ' bytes=' + found.length + ' esperaMs=' + (waited * 500));
-    return _json({ ok: true, outPath: found.fsName, inPoint: inSec, debug: dbg });
+    var bytes = 0;
+    try { bytes = new File(outPath).length; } catch (eB) {}
+    dbg.push('ret=' + ret + ' wa=' + wa + ' exportMs=' + (new Date().getTime() - t0) + ' bytesAlVolver=' + bytes);
+    return _json({
+      ok: true,
+      outPath: outFile.fsName,
+      dir: dir,
+      stem: stem,
+      inPoint: inSec,
+      expectedSeconds: expected,
+      debug: dbg
+    });
   } catch (e) { return _json({ ok: false, error: String(e), debug: dbg }); }
 }
 

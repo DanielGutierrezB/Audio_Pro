@@ -14,6 +14,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const queueMod = require('../plugin/js/queue');
+const { writeSilentWav } = require('./speech-fixture');
 const panelSettings = require('../plugin/js/settings');
 const { STAGE } = queueMod;
 
@@ -43,8 +44,9 @@ function harness(overrides = {}) {
       // A real export takes seconds and the file appears at the end; landing it
       // after a tick is what lets the same-name race show up in a test.
       await tick();
-      touch(outPath);
-      return { ok: true, outPath, inPoint: overrides.inPoint ?? 0 };
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      writeSilentWav(outPath, overrides.exportedSeconds ?? 1);
+      return { ok: true, outPath, inPoint: overrides.inPoint ?? 0, expectedSeconds: overrides.expectedSeconds ?? 1 };
     },
     placeEnhanced: async (id, wavPath, mute, start, label) => {
       calls.push({ name: 'place', id, wavPath, mute, start, label });
@@ -135,6 +137,8 @@ function harness(overrides = {}) {
     log: () => {},
     notify: (msg, type) => notes.push({ msg, type }),
     onSessionLost: () => { lost.count++; },
+    exportPollMs: 1,
+    exportStallMs: overrides.exportStallMs ?? 2000,
   });
 
   return { queue, calls, notes, names: () => calls.map(c => c.name), limit, session, lost };
@@ -586,15 +590,18 @@ test('a resume falls back one stage at a time, never further than it has to', ()
   touch(p.enhancedRaw);
   // The aligned file is gone but Adobe's raw return is not: that is a re-align
   // away from placing, not a re-export and a second Adobe bill.
-  assert.equal(queueMod.resumeStageFor({ stage: STAGE.PLACING, paths: p }), STAGE.ALIGNING);
-  assert.equal(queueMod.resumeStageFor({ stage: STAGE.MASTERING, paths: p, nodeId: 'n' }), STAGE.ALIGNING);
+  const ok = { exportVerified: true };
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.PLACING, paths: p }), STAGE.ALIGNING);
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.MASTERING, paths: p, nodeId: 'n' }), STAGE.ALIGNING);
   // Adobe's return landed before the panel died: skip straight past Adobe.
-  assert.equal(queueMod.resumeStageFor({ stage: STAGE.ENHANCING, paths: p }), STAGE.ALIGNING);
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.ENHANCING, paths: p }), STAGE.ALIGNING);
   // A relink whose master is missing re-renders the master, given the clip.
   touch(p.enhanced);
-  assert.equal(queueMod.resumeStageFor({ stage: STAGE.RELINKING, paths: p, nodeId: 'n', mode: 2 }), STAGE.MASTERING);
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.RELINKING, paths: p, nodeId: 'n', mode: 2 }), STAGE.MASTERING);
   // A clip that already landed is not placed a second time.
-  assert.equal(queueMod.resumeStageFor({ stage: STAGE.PLACING, paths: p, nodeId: 'n' }), STAGE.MASTERING);
+  assert.equal(queueMod.resumeStageFor({ ...ok, stage: STAGE.PLACING, paths: p, nodeId: 'n' }), STAGE.MASTERING);
+  // And none of it counts if the export was never checked complete.
+  assert.equal(queueMod.resumeStageFor({ stage: STAGE.RELINKING, paths: p, nodeId: 'n', mode: 2 }), STAGE.PENDING);
 });
 
 test('a resume that already has Adobe\'s return re-aligns instead of paying again', async () => {
@@ -604,7 +611,7 @@ test('a resume that already has Adobe\'s return re-aligns instead of paying agai
   touch(path.join(work, 'clase.wav'));
   touch(raw);
   writeQueue(dir, [{
-    id: '1', name: 'clase', stage: STAGE.ENHANCING, stem: 'clase',
+    id: '1', name: 'clase', stage: STAGE.ENHANCING, stem: 'clase', exportVerified: true,
     paths: {
       original: path.join(work, 'clase.wav'),
       enhancedRaw: raw,
@@ -771,6 +778,63 @@ test('rows reaching Adobe after the token was dropped wait instead of failing', 
   assert.equal(res.waiting, 1);
   assert.equal(item.error, null);
   assert.ok(!h.names().includes('adobe'));
+});
+
+test('an export Premiere leaves short never goes to Adobe', async () => {
+  const dir = tmpProject();
+  // The sequence is a minute long; the file stops at one second and stays.
+  const h = harness({ projectDir: dir, expectedSeconds: 60, exportedSeconds: 1, exportStallMs: 30 });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+
+  await h.queue.run([item], PRESET);
+
+  assert.deepEqual(h.names(), ['export'], 'Adobe was never asked for a cut-short export');
+  assert.match(item.error, /export incompleto: Premiere dejó de escribir en 0:01 de 1:00/);
+  assert.equal(item.exportVerified, false);
+});
+
+test('rows whose export was never verified are exported again, not sent to Adobe', async () => {
+  // Exactly the queue.json a panel without the export check left behind: rows
+  // waiting at the Adobe stage on exports that were cut to a minute.
+  const dir = tmpProject();
+  const work = path.join(dir, 'Audio_Process');
+  const original = path.join(work, 'clase.wav');
+  touch(original);
+  writeQueue(dir, [
+    { id: '1', name: 'clase', stage: STAGE.ENHANCING, stem: 'clase', paths: { original } },
+    { id: '2', name: 'otra', stage: STAGE.ENHANCING, stem: 'otra', paths: { original }, error: 'sesión de Adobe expirada' },
+  ]);
+
+  const h = harness({ projectDir: dir });
+  const [item, errored] = h.queue.attach(dir);
+  assert.equal(item.stage, STAGE.PENDING);
+  // Going back to the start makes an error about a later stage meaningless,
+  // so it does not keep the row parked.
+  assert.equal(errored.stage, STAGE.PENDING);
+  assert.equal(errored.error, null);
+  h.queue.remove(['2']);
+
+  await h.queue.run(h.queue.pending(), PRESET);
+  assert.equal(h.names()[0], 'export');
+  assert.match(item.paths.original, /clase_2\.wav$/, 'the old cut-short file is left alone');
+  assert.equal(item.stage, STAGE.DONE);
+});
+
+test('the same check runs for a row already in memory, not only on load', async () => {
+  const dir = tmpProject();
+  const h = harness({ projectDir: dir });
+  h.queue.attach(dir);
+  const item = h.queue.upsert({ id: '1', name: 'clase' });
+  await h.queue.run([item], PRESET);
+  const paths = { ...item.paths };
+
+  // A row about to master, whose Enhanced folder was deleted after the fact.
+  Object.assign(item, { stage: STAGE.MASTERING, paths, nodeId: 'node-1', exportVerified: true });
+  fs.rmSync(path.dirname(paths.enhanced), { recursive: true, force: true });
+  h.calls.length = 0;
+  await h.queue.run([item], PRESET);
+  assert.equal(h.names()[0], 'adobe', 'back to Adobe, because the aligned file and the raw return are gone');
 });
 
 test('lanes bound how much runs at once, which is what keeps Premiere usable', async () => {
