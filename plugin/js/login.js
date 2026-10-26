@@ -12,9 +12,18 @@
 // two windows cannot drift apart.
 var cs = new CSInterface();
 var _require = (typeof require !== 'undefined') ? require : (window.cep_node ? window.cep_node.require : null);
-var adobeSession = _require(_require('path').join(cs.getSystemPath(SystemPath.EXTENSION), 'js', 'adobe-session.js'));
+var extJs = _require('path').join(cs.getSystemPath(SystemPath.EXTENSION), 'js');
+var adobeSession = _require(_require('path').join(extJs, 'adobe-session.js'));
+var pointerBridge = _require(_require('path').join(extJs, 'pointer-bridge.js'));
 
 function $(id) { return document.getElementById(id); }
+
+// Every page the iframe loads (podcast.adobe.com, then Adobe's sign-in) is a
+// new document that needs the bridge before the user clicks; install() is a
+// no-op on a document that already has it.
+function bridgeFrame() { pointerBridge.install($('adobeFrame').contentWindow); }
+$('adobeFrame').addEventListener('load', bridgeFrame);
+setInterval(bridgeFrame, 250);
 
 function broadcastToken(tok) {
   try {
